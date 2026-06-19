@@ -47,3 +47,22 @@ Responsibilities:
 5. Diagnostics snapshots.
 6. Persistent store save/load service.
 7. Calibration state machines that do not require fast timing.
+
+## Realized scheduling (implementation, see ADR-006)
+
+Concrete mapping on this board (STM32G474, CubeMX timers):
+
+- **Fast 20 kHz** — driven from the **TIM1 update** event. TIM1 is centre-aligned with
+  ARR 4250 and RCR 0, so the update event fires at 40 kHz (twice per 20 kHz PWM period);
+  the scheduler software-divides by 2 to obtain the 20 kHz fast loop. The definitive FOC
+  trigger moves to **ADC end-of-conversion** (once per PWM period, synchronized to current
+  sampling) when current sensing is brought up in Stage B1.
+- **Medium 1 kHz** — driven from the **TIM7 update** event (PSC 169, ARR 999).
+- **Slow 100 Hz** — decimated from the medium loop (÷10) and serviced in the **main loop**
+  via `MC_Sched_ServiceBackground`, keeping longer work out of ISR context.
+
+Dispatch: `HAL_TIM_PeriodElapsedCallback` (in `main.c` USER CODE) routes TIM1 →
+`MC_Sched_FastTick` and TIM7 → `MC_Sched_MediumTick`. The `mc_scheduler` module stays
+HAL-free; `main.c` (the HAL boundary) starts the timers, and PWM outputs remain disabled
+(safe-off) until the PWM backend is brought up. Loop cadence and worst-case durations are
+mirrored in `g_mc_debug` for the watch window.

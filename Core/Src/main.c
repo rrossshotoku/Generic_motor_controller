@@ -29,7 +29,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "mc_scheduler.h"
+#include "mc_debug.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,7 +106,13 @@ int main(void)
   MX_SPI2_Init();
   MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
-
+  /* Stage A1: framework software init, then start the timing domains.
+     TIM7 update = 1 kHz medium loop. TIM1 update = 40 kHz (centre-aligned, RCR=0),
+     software-divided to a 20 kHz fast loop (see ADR-006). PWM outputs stay disabled
+     (safe-off): MOE/AutomaticOutput remain off until the PWM backend lands in Stage C1. */
+  MC_Framework_Init();
+  HAL_TIM_Base_Start_IT(&htim7);
+  HAL_TIM_Base_Start_IT(&htim1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -115,6 +122,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    MC_Sched_ServiceBackground();
   }
   /* USER CODE END 3 */
 }
@@ -166,7 +174,21 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+/**
+  * @brief HAL timer period-elapsed callback: dispatches the real-time loops (ADR-006).
+  *        TIM1 update -> fast tick (20 kHz after /2); TIM7 update -> medium tick (1 kHz).
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM1)
+  {
+    MC_Sched_FastTick();
+  }
+  else if (htim->Instance == TIM7)
+  {
+    MC_Sched_MediumTick();
+  }
+}
 /* USER CODE END 4 */
 
 /**

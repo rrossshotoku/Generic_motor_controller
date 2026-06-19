@@ -54,4 +54,9 @@ watch window gives immediate observability without first building a comms stack.
 ## Open questions
 
 - Debugger/IDE for the watch window (STM32CubeIDE, Ozone, gdb) — affects watch/inject ergonomics.
-- A single shared debug-mirror convention/header vs. a per-module debug struct.
+
+## Resolved
+
+- Debug-mirror convention: a **single shared `include/mc_debug.h`** with `g_mc_debug`
+  (observe) and `g_mc_inject` (command, gated by `inject_enable`); modules contribute fields
+  to these rather than each owning a separate debug struct. (Implemented in Stage A1.)
