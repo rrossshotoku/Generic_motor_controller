@@ -69,8 +69,10 @@ unknowns and must be supplied/measured before they are trusted (process rule #10
 - Complementary outputs configured **in phase** with the main channels (`OCPolarity`
   active-high, `OCNPolarity` active-low) — matches the proven board and the gate-driver
   expectation; idle state RESET (low) when disabled.
-- **`deadtime_counts = 200`** (≈ 1.18 µs at 170 MHz), confirmed from the TIM1 config
-  (byte-identical to bldc_axis_controller).
+- **`deadtime_counts = 200`** ⇒ DT = (32+8)×8×t_DTS ≈ **1.88 µs** (DTG register 0xC8 uses the
+  ×8 prescaled range, NOT a linear count), confirmed from the TIM1 config (byte-identical to
+  bldc_axis_controller). At a 24 V bus this gives a ~1 V modulation deadband — small commanded
+  voltages produce little current until past it.
 - Encoder sign confirmed: **mechanical position increases for clockwise output rotation**
   (viewed from the output shaft; rotor on the underside). `direction = -1` is correct — this is
   the system-wide positive convention (positive velocity = CW output). FOC torque sign is made
