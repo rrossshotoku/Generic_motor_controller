@@ -71,3 +71,7 @@ unknowns and must be supplied/measured before they are trusted (process rule #10
   expectation; idle state RESET (low) when disabled.
 - **`deadtime_counts = 200`** (≈ 1.18 µs at 170 MHz), confirmed from the TIM1 config
   (byte-identical to bldc_axis_controller).
+- Encoder sign confirmed: **mechanical position increases for clockwise output rotation**
+  (viewed from the output shaft; rotor on the underside). `direction = -1` is correct — this is
+  the system-wide positive convention (positive velocity = CW output). FOC torque sign is made
+  consistent with it at alignment (phase order + electrical offset).
