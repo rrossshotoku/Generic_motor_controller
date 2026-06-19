@@ -53,7 +53,9 @@ typedef struct
     /* --- Feedback / state estimator (Stage B2) --- */
     uint32_t enc_raw;             /**< Raw 21-bit SSI position [counts]. */
     float    mech_position_rad;   /**< Continuous (multi-turn) mechanical position [rad]. */
-    float    mech_velocity_rad_s; /**< Mechanical velocity (finite-diff + LPF) [rad/s]. */
+    float    mech_velocity_rad_s; /**< Mechanical velocity (active source) [rad/s]. */
+    float    vel_finite_diff;     /**< Finite-difference velocity [rad/s]. */
+    float    vel_observer;        /**< Position-tracking observer velocity [rad/s]. */
     float    elec_angle_rad;      /**< Electrical angle [0,2pi) [rad]. */
     bool     enc_valid;           /**< Last encoder read valid. */
 } MC_Debug_t;
@@ -66,6 +68,10 @@ typedef struct
     bool  request_pwm_safe_off; /**< Set from the watch window to force the power stage to safe-off. */
     bool  request_pwm_test;     /**< Bench test: enable 50pct balanced PWM to scope the carrier (motor disconnected). */
     bool  request_offset_cal;   /**< Bench: average N samples at zero current to set ADC offsets (PWM off). */
+    bool  use_finite_diff_velocity; /**< Live: true = finite-diff velocity; false = observer (default). */
+    float obs_kp;               /**< Live observer proportional gain (not gated; no drive). */
+    float obs_ki;               /**< Live observer integral gain. */
+    float obs_kv;               /**< Live observer velocity-damping gain. */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
 } MC_Inject_t;
 

@@ -47,6 +47,16 @@ hardware.
 - include/mc_state_estimator.h
 - requirements.yaml
 
+## Resolution (B2b)
+
+Implemented in the state estimator (1 kHz medium loop), selectable against finite-difference
+(default = observer). Gains ported from the reference firmware **read from the code, not the
+"ki=200" recollection** — the proven `FOC_VelocityObserver_Init` used **kp = 40000, ki = 0,
+kv = 200**, giving omega_n = sqrt(kp) = 200 rad/s and zeta = kv/(2*sqrt(kp)) = 0.5; output LPF
+alpha = 0.3. The observer is continuous-time in its gains (omega_n independent of dt), so the
+values transfer to the 1 kHz rate. All three gains and the source selector are live-tunable from
+the watch window (`g_mc_inject`).
+
 ## Open questions
 
-- Default observer gains for the reference axis (port from old config; confirm on hardware).
+- Final observer gains after on-bench A/B against finite-difference.

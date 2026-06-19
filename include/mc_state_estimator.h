@@ -9,6 +9,11 @@ typedef struct
     float electrical_offset_rad;
     float velocity_filter_hz;
     float sample_period_s;
+    float obs_kp;            /**< Observer proportional gain (position error -> accel). */
+    float obs_ki;            /**< Observer integral gain. */
+    float obs_kv;            /**< Observer velocity-damping gain. */
+    float obs_filter_alpha;  /**< Observer output-velocity LPF (0..1; 1 = no filter). */
+    bool  use_observer;      /**< true = observer velocity (default, ADR-003); false = finite-diff. */
 } MC_StateEstimatorConfig_t;
 
 typedef struct
@@ -17,7 +22,11 @@ typedef struct
     MC_ElectricalState_t electrical;
     float continuous_position_rad;  /**< Multi-turn accumulator [rad]. */
     float prev_single_rad;          /**< Previous single-turn sample [rad] (wrap detect). */
-    float velocity_filtered;        /**< Low-pass filtered mechanical velocity [rad/s]. */
+    float velocity_filtered;        /**< Finite-difference velocity (LPF) [rad/s]. */
+    float obs_theta;                /**< Observer position estimate [rad]. */
+    float obs_omega;                /**< Observer velocity estimate [rad/s]. */
+    float obs_integral;             /**< Observer integral accumulator. */
+    float velocity_observer;        /**< Observer velocity output (filtered) [rad/s]. */
     bool has_prev;
 } MC_StateEstimator_t;
 

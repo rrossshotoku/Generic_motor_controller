@@ -6,8 +6,8 @@
  *
  *  Builds a continuous (multi-turn) mechanical position from a single-turn absolute sample,
  *  estimates mechanical velocity by finite-difference + first-order low-pass, and derives the
- *  electrical angle for FOC. The position-tracking velocity observer (ADR-003) is added in a
- *  later increment (B2b).
+ *  electrical angle for FOC. Includes the position-tracking velocity observer (ADR-003),
+ *  selectable against finite-difference and live-tunable from the watch window.
  */
 
 #define MC_EST_TWO_PI 6.28318530717958647692f
@@ -44,6 +44,10 @@ void MC_StateEstimator_Init(MC_StateEstimator_t *est)
     est->continuous_position_rad = 0.0f;
     est->prev_single_rad         = 0.0f;
     est->velocity_filtered       = 0.0f;
+    est->obs_theta               = 0.0f;
+    est->obs_omega               = 0.0f;
+    est->obs_integral            = 0.0f;
+    est->velocity_observer       = 0.0f;
     est->has_prev                = false;
 }
 
@@ -59,11 +63,16 @@ void MC_StateEstimator_Update(MC_StateEstimator_t *est,
         est->continuous_position_rad = single;
         est->prev_single_rad         = single;
         est->velocity_filtered       = 0.0f;
+        est->obs_theta               = single;   /* observer starts at the measured position */
+        est->obs_omega               = 0.0f;
+        est->obs_integral            = 0.0f;
+        est->velocity_observer       = 0.0f;
         est->has_prev                = true;
     }
     else
     {
-        float delta = wrap_pi(single - est->prev_single_rad);   /* handles single-turn wrap */
+        /* Multi-turn continuous position + finite-difference velocity (LPF). */
+        const float delta = wrap_pi(single - est->prev_single_rad);   /* handles single-turn wrap */
         est->prev_single_rad          = single;
         est->continuous_position_rad += delta;
 
@@ -73,10 +82,24 @@ void MC_StateEstimator_Update(MC_StateEstimator_t *est,
                           ? (1.0f - expf(-MC_EST_TWO_PI * fc * dt))
                           : 1.0f;
         est->velocity_filtered += alpha * (raw_vel - est->velocity_filtered);
+
+        /* Position-tracking observer (ADR-003): PI on position error + velocity damping,
+           double-integrated. Continuous-time omega_n = sqrt(kp), zeta = kv/(2*sqrt(kp)). */
+        const float err = wrap_pi(est->continuous_position_rad - est->obs_theta);
+        est->obs_integral += cfg->obs_ki * err * dt;
+        if (est->obs_integral >  10000.0f) { est->obs_integral =  10000.0f; }
+        if (est->obs_integral < -10000.0f) { est->obs_integral = -10000.0f; }
+        const float accel = cfg->obs_kp * err + est->obs_integral - cfg->obs_kv * est->obs_omega;
+        est->obs_omega += accel * dt;
+        est->obs_theta += est->obs_omega * dt;
+        const float fa = cfg->obs_filter_alpha;
+        est->velocity_observer += fa * (est->obs_omega - est->velocity_observer);
     }
 
+    const float velocity = cfg->use_observer ? est->velocity_observer : est->velocity_filtered;
+
     est->mechanical.position_rad            = est->continuous_position_rad;
-    est->mechanical.velocity_rad_per_s      = est->velocity_filtered;
+    est->mechanical.velocity_rad_per_s      = velocity;
     est->mechanical.acceleration_rad_per_s2 = 0.0f;   /* B2: not estimated */
     est->mechanical.timestamp_ticks         = sample->timestamp_ticks;
     est->mechanical.position_valid          = sample->valid;
@@ -85,6 +108,6 @@ void MC_StateEstimator_Update(MC_StateEstimator_t *est,
 
     const float elec = wrap_2pi(single * cfg->pole_pairs + cfg->electrical_offset_rad);
     est->electrical.electrical_angle_rad          = elec;
-    est->electrical.electrical_velocity_rad_per_s = est->velocity_filtered * cfg->pole_pairs;
+    est->electrical.electrical_velocity_rad_per_s = velocity * cfg->pole_pairs;
     est->electrical.electrical_valid              = sample->valid;
 }

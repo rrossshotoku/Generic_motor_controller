@@ -59,6 +59,8 @@ The estimator must handle wraparound and timestamping. Velocity may be finite di
 - **Estimator** (`mc_state_estimator.c`): multi-turn continuous position via wrap detection;
   mechanical velocity by finite-difference + first-order low-pass (~20 Hz); electrical angle
   `wrap(single * pole_pairs + offset)`. Acceleration not yet estimated.
-- **Velocity observer** (ADR-003 default) deferred to B2b; finite-difference is the current path.
+- **Velocity observer** (ADR-003 default): position-tracking PI + velocity damping,
+  double-integrated (kp=40000, ki=0, kv=200 -> omega_n=200, zeta=0.5; output LPF alpha 0.3).
+  Selectable against finite-difference; gains live-tunable from the watch window.
 - Board profile 0: AMM5B, 21-bit, counts/rev 2,097,152, position LSB 10, direction invert,
   pole pairs 11.

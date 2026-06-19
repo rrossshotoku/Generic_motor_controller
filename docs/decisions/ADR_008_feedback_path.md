@@ -54,7 +54,7 @@ decode and estimator HAL-free preserves boundary isolation and host-testability.
 
 ## Open questions
 
-- Observer gains (B2b, on-bench tuning).
+- Observer implemented in B2b (kp=40000, ki=0, kv=200; live-tunable) -- final gains after on-bench A/B.
 - Acceleration estimation (not done in B2).
 - Fast-loop electrical-angle interpolation/prediction for FOC (D1).
 - Optionally move the SSI read to DMA if the medium-loop blocking time becomes a concern.

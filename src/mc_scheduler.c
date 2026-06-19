@@ -48,8 +48,19 @@ void MC_Framework_Init(void)
         s_est_cfg.electrical_offset_rad = 0.0f;
         s_est_cfg.velocity_filter_hz    = 20.0f;
         s_est_cfg.sample_period_s       = MC_MOTION_DT_S;
+        s_est_cfg.obs_kp                = 40000.0f;  /* omega_n = sqrt(kp) = 200 rad/s */
+        s_est_cfg.obs_ki                = 0.0f;
+        s_est_cfg.obs_kv                = 200.0f;    /* zeta = kv/(2*sqrt(kp)) = 0.5 */
+        s_est_cfg.obs_filter_alpha      = 0.3f;
+        s_est_cfg.use_observer          = true;      /* ADR-003 default */
     }
     MC_StateEstimator_Init(&s_est);
+
+    /* Seed the live observer-tuning knobs (watch-window writable; not gated, no drive). */
+    g_mc_inject.obs_kp = s_est_cfg.obs_kp;
+    g_mc_inject.obs_ki = s_est_cfg.obs_ki;
+    g_mc_inject.obs_kv = s_est_cfg.obs_kv;
+    g_mc_inject.use_finite_diff_velocity = false;
 
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
@@ -153,6 +164,12 @@ void MC_FastLoop_20kHz(void)
 void MC_MotionLoop_1kHz(void)
 {
     /* Stage B2: read the SSI encoder and update the state estimator. */
+    /* Apply live observer tuning + velocity-source selection from the watch window. */
+    s_est_cfg.obs_kp       = g_mc_inject.obs_kp;
+    s_est_cfg.obs_ki       = g_mc_inject.obs_ki;
+    s_est_cfg.obs_kv       = g_mc_inject.obs_kv;
+    s_est_cfg.use_observer = !g_mc_inject.use_finite_diff_velocity;
+
     if (MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample))
     {
         MC_StateEstimator_Update(&s_est, &s_est_cfg, &s_pos_sample);
@@ -161,7 +178,9 @@ void MC_MotionLoop_1kHz(void)
     /* Mirror to the watch window. */
     g_mc_debug.enc_raw             = s_pos_sample.raw_position;
     g_mc_debug.mech_position_rad   = s_est.mechanical.position_rad;
-    g_mc_debug.mech_velocity_rad_s = s_est.mechanical.velocity_rad_per_s;
+    g_mc_debug.mech_velocity_rad_s = s_est.mechanical.velocity_rad_per_s;  /* active source */
+    g_mc_debug.vel_finite_diff     = s_est.velocity_filtered;
+    g_mc_debug.vel_observer        = s_est.velocity_observer;
     g_mc_debug.elec_angle_rad      = s_est.electrical.electrical_angle_rad;
     g_mc_debug.enc_valid           = s_pos_sample.valid;
 }
