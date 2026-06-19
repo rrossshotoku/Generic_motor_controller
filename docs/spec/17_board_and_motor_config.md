@@ -61,3 +61,13 @@ unknowns and must be supplied/measured before they are trusted (process rule #10
 
 - Board-profile **selection** mechanism: compile-time tag, runtime table, or OD/persisted.
 - Whether load inertia is a separate field or folded into one inertia term.
+
+## Verified on hardware (bring-up)
+
+- PWM carrier **20 kHz**, 50 % balanced output observed (motor disconnected); the fast-loop /
+  ADC-trigger marker (GPO_1) lands in the low-side conduction window.
+- Complementary outputs configured **in phase** with the main channels (`OCPolarity`
+  active-high, `OCNPolarity` active-low) — matches the proven board and the gate-driver
+  expectation; idle state RESET (low) when disabled.
+- **`deadtime_counts = 200`** (≈ 1.18 µs at 170 MHz), confirmed from the TIM1 config
+  (byte-identical to bldc_axis_controller).

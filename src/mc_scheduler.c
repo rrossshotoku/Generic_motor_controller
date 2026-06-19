@@ -1,5 +1,6 @@
 #include "mc_scheduler.h"
 #include "mc_debug.h"
+#include "mc_current_sense.h"
 
 /** @file mc_scheduler.c
  *  @brief Timing-domain dispatch (HAL-free). See ADR-006.
@@ -17,9 +18,14 @@ static uint8_t  s_slow_div;   /* 1 kHz medium -> /10 -> 100 Hz slow loop */
 static uint32_t s_fast_prev;  /* previous fast entry timestamp [cycles] */
 static uint32_t s_med_prev;   /* previous medium entry timestamp [cycles] */
 
+/* Stage B1: current-sense instance + latest phase currents. */
+static MC_CurrentSense_t  s_cs;
+static MC_PhaseCurrents_t s_currents;
+
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
+    MC_CurrentSense_Init(&s_cs);
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
 
@@ -93,7 +99,30 @@ void MC_Sched_ServiceBackground(void)
 
 void MC_FastLoop_20kHz(void)
 {
-    /* Stage A1: no control work yet. PWM remains safe-off. */
+    /* Stage B1: read phase currents (sample-synchronised to the PWM peak). Offset
+       calibration runs on request with the power stage in safe-off (no current). */
+    if (g_mc_inject.request_offset_cal)
+    {
+        if (MC_CurrentSense_CalibrateOffsets(&s_cs, 2000u))
+        {
+            g_mc_inject.request_offset_cal = false;
+        }
+    }
+    else
+    {
+        (void)MC_CurrentSense_ReadFast(&s_cs, &s_currents);
+    }
+
+    /* Mirror to the watch window. */
+    g_mc_debug.ia_a               = s_currents.ia_a;
+    g_mc_debug.ib_a               = s_currents.ib_a;
+    g_mc_debug.ic_a               = s_currents.ic_a;
+    g_mc_debug.ia_raw             = s_cs.last_raw_a;
+    g_mc_debug.ic_raw             = s_cs.last_raw_c;
+    g_mc_debug.ia_offset          = s_cs.offset_a_counts;
+    g_mc_debug.ic_offset          = s_cs.offset_c_counts;
+    g_mc_debug.current_valid      = s_currents.valid;
+    g_mc_debug.current_calibrated = s_cs.calibrated;
 }
 
 void MC_MotionLoop_1kHz(void)

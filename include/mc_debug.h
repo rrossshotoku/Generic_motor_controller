@@ -38,6 +38,17 @@ typedef struct
     uint32_t slow_missed_count;    /**< Times a slow tick was raised before the previous serviced. */
 
     bool pwm_enabled;              /**< Power-stage mirror; false = safe-off. */
+
+    /* --- Current sense (Stage B1) --- */
+    float    ia_a;                 /**< Phase A current [A]. */
+    float    ib_a;                 /**< Phase B current [A] (derived). */
+    float    ic_a;                 /**< Phase C current [A]. */
+    uint16_t ia_raw;              /**< Phase A raw ADC counts. */
+    uint16_t ic_raw;              /**< Phase C raw ADC counts. */
+    float    ia_offset;           /**< Phase A zero-current offset [counts]. */
+    float    ic_offset;           /**< Phase C zero-current offset [counts]. */
+    bool     current_valid;       /**< Last current read valid (no ADC overrun). */
+    bool     current_calibrated;  /**< Offsets have been calibrated. */
 } MC_Debug_t;
 
 /** @brief Command/inject fields written from the watch window during bring-up.
@@ -47,6 +58,7 @@ typedef struct
     bool  inject_enable;        /**< Master gate: when false, inject fields have no effect. */
     bool  request_pwm_safe_off; /**< Set from the watch window to force the power stage to safe-off. */
     bool  request_pwm_test;     /**< Bench test: enable 50pct balanced PWM to scope the carrier (motor disconnected). */
+    bool  request_offset_cal;   /**< Bench: average N samples at zero current to set ADC offsets (PWM off). */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
 } MC_Inject_t;
 

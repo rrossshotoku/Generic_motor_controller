@@ -119,7 +119,9 @@ int main(void)
   HAL_TIM_Base_Start(&htim1);             /* PWM time base: generates OC4REF/TRGO, outputs off */
 
   HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
-  HAL_ADC_Start_IT(&hadc1);               /* 20 kHz fast loop via ADC EOC (TIM1-TRGO triggered) */
+  HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
+  HAL_ADC_Start(&hadc2);                  /* ADC2 slave first (dual regular-simultaneous) */
+  HAL_ADC_Start_IT(&hadc1);               /* ADC1 master triggers both; EOC drives the fast loop */
   /* USER CODE END 2 */
 
   /* Infinite loop */
