@@ -58,6 +58,12 @@ typedef struct
     float    vel_observer;        /**< Position-tracking observer velocity [rad/s]. */
     float    elec_angle_rad;      /**< Electrical angle [0,2pi) [rad]. */
     bool     enc_valid;           /**< Last encoder read valid. */
+
+    /* --- Open-loop drive / alignment (Stage C2) --- */
+    float    vd_applied_v;        /**< Applied d-axis voltage [V]. */
+    float    i_max_a;             /**< Max |phase current| this cycle [A]. */
+    float    elec_offset_rad;     /**< Captured electrical offset [rad]. */
+    bool     overcurrent_trip;    /**< Latched over-current trip (forces safe-off). */
 } MC_Debug_t;
 
 /** @brief Command/inject fields written from the watch window during bring-up.
@@ -65,13 +71,19 @@ typedef struct
 typedef struct
 {
     bool  inject_enable;        /**< Master gate: when false, inject fields have no effect. */
-    bool  request_pwm_safe_off; /**< Set from the watch window to force the power stage to safe-off. */
-    bool  request_pwm_test;     /**< Bench test: enable 50pct balanced PWM to scope the carrier (motor disconnected). */
     bool  request_offset_cal;   /**< Bench: average N samples at zero current to set ADC offsets (PWM off). */
     bool  use_finite_diff_velocity; /**< Live: true = finite-diff velocity; false = observer (default). */
     float obs_kp;               /**< Live observer proportional gain (not gated; no drive). */
     float obs_ki;               /**< Live observer integral gain. */
     float obs_kv;               /**< Live observer velocity-damping gain. */
+
+    /* --- Open-loop drive / alignment (Stage C2; all DRIVE gated by inject_enable above) --- */
+    float align_voltage_v;       /**< Commanded d-axis voltage Vd [V] (clamped <= 3 V). */
+    float align_angle_rad;       /**< Commanded electrical angle [rad] (0 aligns d-axis to phase A). */
+    float vbus_v;                /**< Supply/bus voltage used for the duty calc [V]. */
+    float current_limit_a;       /**< Over-current trip threshold [A]. */
+    bool  request_align_capture; /**< Capture the electrical offset at the held rotor position. */
+    bool  clear_fault;           /**< Clear the latched over-current trip. */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
 } MC_Inject_t;
 

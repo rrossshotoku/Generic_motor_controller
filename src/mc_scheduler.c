@@ -5,6 +5,9 @@
 #include "mc_ssi_encoder.h"
 #include "mc_state_estimator.h"
 #include "mc_motor_model.h"
+#include "mc_math.h"
+#include "mc_pwm.h"
+#include <math.h>
 
 /** @file mc_scheduler.c
  *  @brief Timing-domain dispatch (HAL-free). See ADR-006.
@@ -32,6 +35,11 @@ static MC_SsiEncoderConfig_t     s_enc_cfg;
 static MC_StateEstimator_t       s_est;
 static MC_StateEstimatorConfig_t s_est_cfg;
 static MC_PositionSensorSample_t s_pos_sample;
+
+/* Stage C2: open-loop drive state. */
+#define MC_C2_VD_MAX 3.0f   /* hard clamp on commanded d-axis voltage [V] */
+static bool s_oc_trip;      /* latched over-current trip */
+static bool s_pwm_on;       /* PWM outputs currently enabled */
 
 void MC_Framework_Init(void)
 {
@@ -61,6 +69,10 @@ void MC_Framework_Init(void)
     g_mc_inject.obs_ki = s_est_cfg.obs_ki;
     g_mc_inject.obs_kv = s_est_cfg.obs_kv;
     g_mc_inject.use_finite_diff_velocity = false;
+
+    /* C2 drive defaults (drive stays off until inject_enable is set). */
+    g_mc_inject.vbus_v          = 24.0f;   /* set to your actual supply voltage */
+    g_mc_inject.current_limit_a = 2.0f;    /* over-current trip [A] */
 
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
@@ -159,6 +171,50 @@ void MC_FastLoop_20kHz(void)
     g_mc_debug.ic_offset          = s_cs.offset_c_counts;
     g_mc_debug.current_valid      = s_currents.valid;
     g_mc_debug.current_calibrated = s_cs.calibrated;
+
+    /* Stage C2: over-current monitor + open-loop d-axis voltage (DRIVE gated by inject_enable). */
+    float imax = fabsf(s_currents.ia_a);
+    const float aib = fabsf(s_currents.ib_a);
+    const float aic = fabsf(s_currents.ic_a);
+    if (aib > imax) { imax = aib; }
+    if (aic > imax) { imax = aic; }
+    g_mc_debug.i_max_a = imax;
+
+    if (g_mc_inject.clear_fault) { s_oc_trip = false; g_mc_inject.clear_fault = false; }
+    if (s_currents.valid && (imax > g_mc_inject.current_limit_a)) { s_oc_trip = true; }
+
+    const float vd = MC_Math_Clamp(g_mc_inject.align_voltage_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
+    const bool drive = g_mc_inject.inject_enable && !s_oc_trip
+                       && !g_mc_inject.request_offset_cal && (vd != 0.0f);
+    if (drive)
+    {
+        float sin_e, cos_e;
+        MC_Math_SinCos(g_mc_inject.align_angle_rad, &sin_e, &cos_e);
+        const float v_alpha = vd * cos_e;   /* Vq = 0 */
+        const float v_beta  = vd * sin_e;
+        const float v_a = v_alpha;
+        const float v_b = -0.5f * v_alpha + 0.86602540f * v_beta;   /* inverse Clarke */
+        const float v_c = -0.5f * v_alpha - 0.86602540f * v_beta;
+        const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
+
+        MC_PwmDuty_t duty;
+        duty.duty_a = 0.5f + (v_a / vbus);
+        duty.duty_b = 0.5f + (v_b / vbus);
+        duty.duty_c = 0.5f + (v_c / vbus);
+        duty.enable = true;
+
+        if (!s_pwm_on) { MC_Pwm_Start(); s_pwm_on = true; }
+        MC_Pwm_SetDutyFast(&duty);
+        g_mc_debug.pwm_enabled  = true;
+        g_mc_debug.vd_applied_v = vd;
+    }
+    else
+    {
+        if (s_pwm_on) { MC_Pwm_ForceSafeOff(); s_pwm_on = false; }
+        g_mc_debug.pwm_enabled  = false;
+        g_mc_debug.vd_applied_v = 0.0f;
+    }
+    g_mc_debug.overcurrent_trip = s_oc_trip;
 }
 
 void MC_MotionLoop_1kHz(void)
@@ -183,6 +239,16 @@ void MC_MotionLoop_1kHz(void)
     g_mc_debug.vel_observer        = s_est.velocity_observer;
     g_mc_debug.elec_angle_rad      = s_est.electrical.electrical_angle_rad;
     g_mc_debug.enc_valid           = s_pos_sample.valid;
+
+    /* Stage C2: capture the electrical offset so the electrical angle reads 0 at the held
+       rotor position (commanded electrical angle 0). */
+    if (g_mc_inject.request_align_capture)
+    {
+        g_mc_inject.request_align_capture = false;
+        s_est_cfg.electrical_offset_rad =
+            MC_Math_Wrap2Pi(-s_pos_sample.position_rad * s_est_cfg.pole_pairs);
+        g_mc_debug.elec_offset_rad = s_est_cfg.electrical_offset_rad;
+    }
 }
 
 void MC_SlowLoop_10_100Hz(void)

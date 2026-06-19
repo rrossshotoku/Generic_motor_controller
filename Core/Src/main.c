@@ -57,7 +57,6 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-void BenchTest_ServicePwm(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -132,7 +131,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     MC_Sched_ServiceBackground();
-    BenchTest_ServicePwm();
   }
   /* USER CODE END 3 */
 }
@@ -207,44 +205,6 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
     HAL_GPIO_WritePin(GPO_1_GPIO_Port, GPO_1_Pin, GPIO_PIN_SET);
     MC_Sched_FastTick();
     HAL_GPIO_WritePin(GPO_1_GPIO_Port, GPO_1_Pin, GPIO_PIN_RESET);
-  }
-}
-
-/**
-  * @brief Bench test (motor DISCONNECTED): enable/disable 50% balanced PWM so the carrier
-  *        and dead-time can be scoped. Gated by g_mc_inject.request_pwm_test; off by default.
-  *        50% on all three phases is a balanced (zero net) output -- no torque even if a
-  *        motor were connected.
-  */
-void BenchTest_ServicePwm(void)
-{
-  static bool pwm_running = false;
-
-  if (g_mc_inject.request_pwm_test && !pwm_running)
-  {
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 2125u);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 2125u);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 2125u);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
-    g_mc_debug.pwm_enabled = true;
-    pwm_running = true;
-  }
-  else if (!g_mc_inject.request_pwm_test && pwm_running)
-  {
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);
-    __HAL_TIM_MOE_DISABLE(&htim1);   /* explicit safe-off */
-    g_mc_debug.pwm_enabled = false;
-    pwm_running = false;
   }
 }
 /* USER CODE END 4 */
