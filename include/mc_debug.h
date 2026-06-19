@@ -46,6 +46,7 @@ typedef struct
 {
     bool  inject_enable;        /**< Master gate: when false, inject fields have no effect. */
     bool  request_pwm_safe_off; /**< Set from the watch window to force the power stage to safe-off. */
+    bool  request_pwm_test;     /**< Bench test: enable 50pct balanced PWM to scope the carrier (motor disconnected). */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
 } MC_Inject_t;
 
