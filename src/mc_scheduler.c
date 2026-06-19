@@ -13,7 +13,6 @@
 static volatile uint8_t s_slow_pending;
 
 /* Decimation + timing state (each field written by a single context only). */
-static uint8_t  s_fast_div;   /* 40 kHz TIM1 update -> /2 -> 20 kHz fast loop */
 static uint8_t  s_slow_div;   /* 1 kHz medium -> /10 -> 100 Hz slow loop */
 static uint32_t s_fast_prev;  /* previous fast entry timestamp [cycles] */
 static uint32_t s_med_prev;   /* previous medium entry timestamp [cycles] */
@@ -26,14 +25,9 @@ void MC_Framework_Init(void)
 
 void MC_Sched_FastTick(void)
 {
-    /* TIM1 update is 40 kHz (centre-aligned, RCR=0); run the fast loop every 2nd event
-       to obtain 20 kHz. The definitive FOC trigger moves to ADC end-of-conversion in B1. */
-    if (++s_fast_div < 2u)
-    {
-        return;
-    }
-    s_fast_div = 0u;
-
+    /* Called once per PWM period (20 kHz) from the ADC end-of-conversion ISR. The ADC is
+       hardware-triggered by TIM1 TRGO=OC4REF at the counter peak (low-side conducting) --
+       the proven, sample-synchronised FOC trigger (see ADR-006). */
     uint32_t t0 = MC_Debug_Cycles();
     g_mc_debug.fast_period_cycles = t0 - s_fast_prev;
     s_fast_prev = t0;

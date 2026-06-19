@@ -57,7 +57,7 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+void BenchTest_ServicePwm(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -106,13 +106,20 @@ int main(void)
   MX_SPI2_Init();
   MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
-  /* Stage A1: framework software init, then start the timing domains.
-     TIM7 update = 1 kHz medium loop. TIM1 update = 40 kHz (centre-aligned, RCR=0),
-     software-divided to a 20 kHz fast loop (see ADR-006). PWM outputs stay disabled
-     (safe-off): MOE/AutomaticOutput remain off until the PWM backend lands in Stage C1. */
+  /* Framework software init, then start the timing domains (see ADR-006).
+       - Medium 1 kHz: TIM7 update interrupt.
+       - Fast 20 kHz : ADC end-of-conversion. The ADC is hardware-triggered by TIM1
+         TRGO=OC4REF (CH4=4249, the counter peak), so the sample lands in the low-side
+         conduction window -- the proven, sample-synchronised FOC trigger.
+     TIM1 runs as the PWM time base (counter only) to generate OC4REF/TRGO; the PWM pin
+     outputs stay DISABLED (safe-off) until deliberately enabled for a bench test. */
   MC_Framework_Init();
-  HAL_TIM_Base_Start_IT(&htim7);
-  HAL_TIM_Base_Start_IT(&htim1);
+
+  HAL_TIM_Base_Start_IT(&htim7);          /* 1 kHz medium loop */
+  HAL_TIM_Base_Start(&htim1);             /* PWM time base: generates OC4REF/TRGO, outputs off */
+
+  HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+  HAL_ADC_Start_IT(&hadc1);               /* 20 kHz fast loop via ADC EOC (TIM1-TRGO triggered) */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -123,6 +130,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     MC_Sched_ServiceBackground();
+    BenchTest_ServicePwm();
   }
   /* USER CODE END 3 */
 }
@@ -175,18 +183,66 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 /**
-  * @brief HAL timer period-elapsed callback: dispatches the real-time loops (ADR-006).
-  *        TIM1 update -> fast tick (20 kHz after /2); TIM7 update -> medium tick (1 kHz).
+  * @brief Medium-loop dispatch: TIM7 update -> 1 kHz motion loop (see ADR-006).
   */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM1)
-  {
-    MC_Sched_FastTick();
-  }
-  else if (htim->Instance == TIM7)
+  if (htim->Instance == TIM7)
   {
     MC_Sched_MediumTick();
+  }
+}
+
+/**
+  * @brief Fast-loop dispatch: ADC1 end-of-conversion -> 20 kHz fast loop (see ADR-006).
+  *        The ADC is TIM1-TRGO triggered at the PWM peak, so this runs once per PWM period
+  *        synchronised to the current sample. GPO_1 (PC7) is pulsed as a scope marker.
+  */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc->Instance == ADC1)
+  {
+    HAL_GPIO_WritePin(GPO_1_GPIO_Port, GPO_1_Pin, GPIO_PIN_SET);
+    MC_Sched_FastTick();
+    HAL_GPIO_WritePin(GPO_1_GPIO_Port, GPO_1_Pin, GPIO_PIN_RESET);
+  }
+}
+
+/**
+  * @brief Bench test (motor DISCONNECTED): enable/disable 50% balanced PWM so the carrier
+  *        and dead-time can be scoped. Gated by g_mc_inject.request_pwm_test; off by default.
+  *        50% on all three phases is a balanced (zero net) output -- no torque even if a
+  *        motor were connected.
+  */
+void BenchTest_ServicePwm(void)
+{
+  static bool pwm_running = false;
+
+  if (g_mc_inject.request_pwm_test && !pwm_running)
+  {
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 2125u);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 2125u);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 2125u);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+    g_mc_debug.pwm_enabled = true;
+    pwm_running = true;
+  }
+  else if (!g_mc_inject.request_pwm_test && pwm_running)
+  {
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);
+    __HAL_TIM_MOE_DISABLE(&htim1);   /* explicit safe-off */
+    g_mc_debug.pwm_enabled = false;
+    pwm_running = false;
   }
 }
 /* USER CODE END 4 */
