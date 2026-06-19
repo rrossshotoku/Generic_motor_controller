@@ -77,3 +77,7 @@ unknowns and must be supplied/measured before they are trusted (process rule #10
   (viewed from the output shaft; rotor on the underside). `direction = -1` is correct — this is
   the system-wide positive convention (positive velocity = CW output). FOC torque sign is made
   consistent with it at alignment (phase order + electrical offset).
+- Current-sense scale confirmed against a DC current clamp: `ia_a` indicated == clamp-measured
+  (1 A == 1 A). The profile-0 constant (≈ 0.01555 A/count) is correct, so the over-current trip
+  and FOC torque scaling are trustworthy. (The low current at low Vd was the ~1 V dead-time
+  deadband, not a scale error.)
