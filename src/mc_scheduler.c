@@ -1,6 +1,10 @@
 #include "mc_scheduler.h"
 #include "mc_debug.h"
+#include "mc_config.h"
 #include "mc_current_sense.h"
+#include "mc_ssi_encoder.h"
+#include "mc_state_estimator.h"
+#include "mc_motor_model.h"
 
 /** @file mc_scheduler.c
  *  @brief Timing-domain dispatch (HAL-free). See ADR-006.
@@ -22,10 +26,31 @@ static uint32_t s_med_prev;   /* previous medium entry timestamp [cycles] */
 static MC_CurrentSense_t  s_cs;
 static MC_PhaseCurrents_t s_currents;
 
+/* Stage B2: SSI encoder + state estimator. */
+static MC_SsiEncoder_t           s_enc;
+static MC_SsiEncoderConfig_t     s_enc_cfg;
+static MC_StateEstimator_t       s_est;
+static MC_StateEstimatorConfig_t s_est_cfg;
+static MC_PositionSensorSample_t s_pos_sample;
+
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
     MC_CurrentSense_Init(&s_cs);
+
+    MC_SsiEncoder_LoadDefaultConfig(&s_enc_cfg);
+    MC_SsiEncoder_Init(&s_enc, &s_enc_cfg);
+
+    {
+        MC_MotorModel_t motor;
+        MC_MotorModel_LoadDefault(&motor);
+        s_est_cfg.pole_pairs            = (float)motor.pole_pairs;
+        s_est_cfg.electrical_offset_rad = 0.0f;
+        s_est_cfg.velocity_filter_hz    = 20.0f;
+        s_est_cfg.sample_period_s       = MC_MOTION_DT_S;
+    }
+    MC_StateEstimator_Init(&s_est);
+
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
 
@@ -127,7 +152,18 @@ void MC_FastLoop_20kHz(void)
 
 void MC_MotionLoop_1kHz(void)
 {
-    /* Stage A1: no motion work yet. */
+    /* Stage B2: read the SSI encoder and update the state estimator. */
+    if (MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample))
+    {
+        MC_StateEstimator_Update(&s_est, &s_est_cfg, &s_pos_sample);
+    }
+
+    /* Mirror to the watch window. */
+    g_mc_debug.enc_raw             = s_pos_sample.raw_position;
+    g_mc_debug.mech_position_rad   = s_est.mechanical.position_rad;
+    g_mc_debug.mech_velocity_rad_s = s_est.mechanical.velocity_rad_per_s;
+    g_mc_debug.elec_angle_rad      = s_est.electrical.electrical_angle_rad;
+    g_mc_debug.enc_valid           = s_pos_sample.valid;
 }
 
 void MC_SlowLoop_10_100Hz(void)

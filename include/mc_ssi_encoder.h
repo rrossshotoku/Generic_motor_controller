@@ -28,6 +28,9 @@ typedef struct
     bool initialised;
 } MC_SsiEncoder_t;
 
+/** @brief Fill @p cfg with the default board profile (AMM5B 21-bit on SPI1). */
+void MC_SsiEncoder_LoadDefaultConfig(MC_SsiEncoderConfig_t *cfg);
+
 void MC_SsiEncoder_Init(MC_SsiEncoder_t *enc, const MC_SsiEncoderConfig_t *cfg);
 bool MC_SsiEncoder_DecodeFrame(MC_SsiEncoder_t *enc, const MC_SsiEncoderConfig_t *cfg,
                                uint32_t raw_frame, MC_PositionSensorSample_t *sample);

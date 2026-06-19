@@ -15,7 +15,9 @@ typedef struct
 {
     MC_MechanicalState_t mechanical;
     MC_ElectricalState_t electrical;
-    float prev_position_rad;
+    float continuous_position_rad;  /**< Multi-turn accumulator [rad]. */
+    float prev_single_rad;          /**< Previous single-turn sample [rad] (wrap detect). */
+    float velocity_filtered;        /**< Low-pass filtered mechanical velocity [rad/s]. */
     bool has_prev;
 } MC_StateEstimator_t;
 

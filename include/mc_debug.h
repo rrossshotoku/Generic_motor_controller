@@ -49,6 +49,13 @@ typedef struct
     float    ic_offset;           /**< Phase C zero-current offset [counts]. */
     bool     current_valid;       /**< Last current read valid (no ADC overrun). */
     bool     current_calibrated;  /**< Offsets have been calibrated. */
+
+    /* --- Feedback / state estimator (Stage B2) --- */
+    uint32_t enc_raw;             /**< Raw 21-bit SSI position [counts]. */
+    float    mech_position_rad;   /**< Continuous (multi-turn) mechanical position [rad]. */
+    float    mech_velocity_rad_s; /**< Mechanical velocity (finite-diff + LPF) [rad/s]. */
+    float    elec_angle_rad;      /**< Electrical angle [0,2pi) [rad]. */
+    bool     enc_valid;           /**< Last encoder read valid. */
 } MC_Debug_t;
 
 /** @brief Command/inject fields written from the watch window during bring-up.
