@@ -7,6 +7,7 @@
 #include "mc_motor_model.h"
 #include "mc_math.h"
 #include "mc_pwm.h"
+#include "mc_foc.h"
 #include <math.h>
 
 /** @file mc_scheduler.c
@@ -41,6 +42,12 @@ static MC_PositionSensorSample_t s_pos_sample;
 static bool s_oc_trip;      /* latched over-current trip */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
+/* Stage D1: FOC current loop. */
+static MC_Foc_t       s_foc;
+static MC_FocConfig_t s_foc_cfg;
+static bool           s_foc_on;       /* FOC active (for entry reset) */
+static volatile float s_elec_angle;   /* electrical angle published medium->fast (atomic float) */
+
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
@@ -73,6 +80,29 @@ void MC_Framework_Init(void)
     /* C2 drive defaults (drive stays off until inject_enable is set). */
     g_mc_inject.vbus_v          = 24.0f;   /* set to your actual supply voltage */
     g_mc_inject.current_limit_a = 2.0f;    /* over-current trip [A] */
+
+    /* D1 FOC current-loop config (ported gains; runs in the fast loop). */
+    {
+        MC_PidConfig_t ipi;
+        ipi.kp                        = 1.7f;
+        ipi.ki                        = 1700.0f;
+        ipi.kd                        = 0.0f;
+        ipi.sample_period_s           = MC_FAST_DT_S;
+        ipi.output_min                = -24.0f;
+        ipi.output_max                =  24.0f;
+        ipi.integrator_min            = -24.0f;
+        ipi.integrator_max            =  24.0f;
+        ipi.derivative_filter_hz      = 0.0f;
+        ipi.integrator_enabled        = true;
+        ipi.derivative_enabled        = false;
+        ipi.derivative_on_measurement = true;
+        s_foc_cfg.id_pi                   = ipi;
+        s_foc_cfg.iq_pi                   = ipi;
+        s_foc_cfg.voltage_limit_v         = 13.8f;   /* ~Vbus/sqrt(3) for linear SVPWM at 24 V */
+        s_foc_cfg.sample_period_s         = MC_FAST_DT_S;
+        s_foc_cfg.use_cordic_if_available = false;
+    }
+    MC_Foc_Init(&s_foc, &s_foc_cfg);
 
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
@@ -183,36 +213,70 @@ void MC_FastLoop_20kHz(void)
     if (g_mc_inject.clear_fault) { s_oc_trip = false; g_mc_inject.clear_fault = false; }
     if (s_currents.valid && (imax > g_mc_inject.current_limit_a)) { s_oc_trip = true; }
 
-    const float vd = MC_Math_Clamp(g_mc_inject.align_voltage_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
-    const bool drive = g_mc_inject.inject_enable && !s_oc_trip
-                       && !g_mc_inject.request_offset_cal && (vd != 0.0f);
-    if (drive)
-    {
-        float sin_e, cos_e;
-        MC_Math_SinCos(g_mc_inject.align_angle_rad, &sin_e, &cos_e);
-        const float v_alpha = vd * cos_e;   /* Vq = 0 */
-        const float v_beta  = vd * sin_e;
-        const float v_a = v_alpha;
-        const float v_b = -0.5f * v_alpha + 0.86602540f * v_beta;   /* inverse Clarke */
-        const float v_c = -0.5f * v_alpha - 0.86602540f * v_beta;
-        const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
+    const bool armed = g_mc_inject.inject_enable && !s_oc_trip && !g_mc_inject.request_offset_cal;
 
-        MC_PwmDuty_t duty;
-        duty.duty_a = 0.5f + (v_a / vbus);
-        duty.duty_b = 0.5f + (v_b / vbus);
-        duty.duty_c = 0.5f + (v_c / vbus);
-        duty.enable = true;
+    if (armed && g_mc_inject.foc_enable)
+    {
+        /* Stage D1: closed FOC current loop. */
+        if (!s_foc_on) { MC_Foc_Reset(&s_foc); s_foc_on = true; }
+
+        MC_ElectricalState_t elec;
+        elec.electrical_angle_rad          = s_elec_angle;   /* published by the medium loop */
+        elec.electrical_velocity_rad_per_s = 0.0f;
+        elec.electrical_valid              = true;
+
+        MC_FocCurrentCommand_t cmd;
+        cmd.id_a   = g_mc_inject.id_cmd_a;
+        cmd.iq_a   = g_mc_inject.iq_cmd_a;
+        cmd.enable = true;
+
+        const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
+        MC_PwmDuty_t duty = MC_Foc_Update(&s_foc, &s_foc_cfg, &cmd, &s_currents, &elec, vbus);
 
         if (!s_pwm_on) { MC_Pwm_Start(); s_pwm_on = true; }
         MC_Pwm_SetDutyFast(&duty);
-        g_mc_debug.pwm_enabled  = true;
-        g_mc_debug.vd_applied_v = vd;
+        g_mc_debug.pwm_enabled       = true;
+        g_mc_debug.id_meas_a         = s_foc.id_measured_a;
+        g_mc_debug.iq_meas_a         = s_foc.iq_measured_a;
+        g_mc_debug.vd_v              = s_foc.vd_v;
+        g_mc_debug.vq_v              = s_foc.vq_v;
+        g_mc_debug.voltage_saturated = s_foc.voltage_saturated;
+        g_mc_debug.vd_applied_v      = 0.0f;
     }
     else
     {
-        if (s_pwm_on) { MC_Pwm_ForceSafeOff(); s_pwm_on = false; }
-        g_mc_debug.pwm_enabled  = false;
-        g_mc_debug.vd_applied_v = 0.0f;
+        s_foc_on = false;
+
+        const float vd = MC_Math_Clamp(g_mc_inject.align_voltage_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
+        if (armed && (vd != 0.0f))
+        {
+            /* Stage C2: open-loop d-axis voltage at the commanded electrical angle. */
+            float sin_e, cos_e;
+            MC_Math_SinCos(g_mc_inject.align_angle_rad, &sin_e, &cos_e);
+            const float v_alpha = vd * cos_e;   /* Vq = 0 */
+            const float v_beta  = vd * sin_e;
+            const float v_a = v_alpha;
+            const float v_b = -0.5f * v_alpha + 0.86602540f * v_beta;   /* inverse Clarke */
+            const float v_c = -0.5f * v_alpha - 0.86602540f * v_beta;
+            const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
+
+            MC_PwmDuty_t duty;
+            duty.duty_a = 0.5f + (v_a / vbus);
+            duty.duty_b = 0.5f + (v_b / vbus);
+            duty.duty_c = 0.5f + (v_c / vbus);
+            duty.enable = true;
+
+            if (!s_pwm_on) { MC_Pwm_Start(); s_pwm_on = true; }
+            MC_Pwm_SetDutyFast(&duty);
+            g_mc_debug.pwm_enabled  = true;
+            g_mc_debug.vd_applied_v = vd;
+        }
+        else
+        {
+            if (s_pwm_on) { MC_Pwm_ForceSafeOff(); s_pwm_on = false; }
+            g_mc_debug.pwm_enabled  = false;
+            g_mc_debug.vd_applied_v = 0.0f;
+        }
     }
     g_mc_debug.overcurrent_trip = s_oc_trip;
 }
@@ -239,6 +303,7 @@ void MC_MotionLoop_1kHz(void)
     g_mc_debug.vel_observer        = s_est.velocity_observer;
     g_mc_debug.elec_angle_rad      = s_est.electrical.electrical_angle_rad;
     g_mc_debug.enc_valid           = s_pos_sample.valid;
+    s_elec_angle = s_est.electrical.electrical_angle_rad;   /* publish to fast loop (atomic float) */
 
     /* Stage C2: capture the electrical offset so the electrical angle reads 0 at the held
        rotor position (commanded electrical angle 0). */

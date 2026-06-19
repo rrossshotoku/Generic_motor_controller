@@ -64,6 +64,13 @@ typedef struct
     float    i_max_a;             /**< Max |phase current| this cycle [A]. */
     float    elec_offset_rad;     /**< Captured electrical offset [rad]. */
     bool     overcurrent_trip;    /**< Latched over-current trip (forces safe-off). */
+
+    /* --- FOC current loop (Stage D1) --- */
+    float    id_meas_a;           /**< Measured d-axis current [A]. */
+    float    iq_meas_a;           /**< Measured q-axis current [A]. */
+    float    vd_v;                /**< FOC d-axis voltage output [V]. */
+    float    vq_v;                /**< FOC q-axis voltage output [V]. */
+    bool     voltage_saturated;   /**< FOC voltage vector hit the limit. */
 } MC_Debug_t;
 
 /** @brief Command/inject fields written from the watch window during bring-up.
@@ -84,6 +91,11 @@ typedef struct
     float current_limit_a;       /**< Over-current trip threshold [A]. */
     bool  request_align_capture; /**< Capture the electrical offset at the held rotor position. */
     bool  clear_fault;           /**< Clear the latched over-current trip. */
+
+    /* --- FOC current loop (Stage D1; gated by inject_enable) --- */
+    bool  foc_enable;            /**< Select the closed FOC current loop (vs open-loop drive). */
+    float iq_cmd_a;              /**< q-axis (torque) current command [A]. */
+    float id_cmd_a;              /**< d-axis current command [A] (usually 0). */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
 } MC_Inject_t;
 
