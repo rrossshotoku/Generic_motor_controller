@@ -1,0 +1,51 @@
+
+digraph G {
+  graph [rankdir=TB, bgcolor="white", splines=ortho, nodesep=0.45, ranksep=0.55];
+  node [shape=box, style="rounded,filled", fillcolor="#F7F9FB", color="#4B5563", fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9, color="#374151"];
+
+  mode [label="Mode Manager"];
+  traj [label="Jerk-limited Trajectory Planner
+position, velocity FF, acceleration FF, jerk"];
+  pos [label="Position Controller
+outer loop: position error -> velocity correction"];
+  vsum [label="Velocity Demand Sum
+trajectory velocity FF + position correction"];
+  vel [label="Velocity Controller
+middle loop: velocity error -> torque/iq correction"];
+  tc [label="Torque / Current Request Generator
+adds acceleration FF, friction, limits/derating"];
+  foc [label="FOC Current Controller
+inner loop: id/iq PI -> voltage demand"];
+  pwm [label="SVPWM / PWM Output"];
+  inv [label="Gate Driver / Inverter -> Motor"];
+
+  joy [label="Joystick Conditioning
+deadband, scaling, accel limit, soft-limit slowdown", fillcolor="#ECFDF5"];
+  pv [label="Profile Velocity Conditioner
+ramp, accel limit, soft-limit slowdown", fillcolor="#ECFDF5"];
+  torque [label="Torque / Current Mode", fillcolor="#ECFDF5"];
+  step [label="Commissioning Step Injection
+position / velocity / iq-current", fillcolor="#FFF7ED"];
+
+  mode -> traj [label="profile position / timed move"];
+  traj -> pos [label="position demand"];
+  pos -> vsum [label="velocity correction"];
+  traj -> vsum [label="velocity FF"];
+  vsum -> vel;
+  vel -> tc [label="feedback correction"];
+  traj -> tc [label="acceleration FF"];
+  tc -> foc [label="id/iq command"];
+  foc -> pwm -> inv;
+
+  mode -> joy [label="joystick velocity"];
+  joy -> vel [label="direct velocity demand"];
+  mode -> pv [label="profile velocity"];
+  pv -> vel [label="direct velocity demand"];
+  mode -> torque [label="torque/current mode"];
+  torque -> tc;
+
+  step -> pos [style=dashed];
+  step -> vel [style=dashed];
+  step -> foc [style=dashed];
+}

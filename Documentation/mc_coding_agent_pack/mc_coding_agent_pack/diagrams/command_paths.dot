@@ -1,0 +1,36 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", splines=ortho, nodesep=0.45, ranksep=0.55];
+  node [shape=box, style="rounded,filled", fillcolor="#F7F9FB", color="#4B5563", fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9, color="#374151"];
+  mode [label="Mode Manager"];
+  traj [label="Jerk-limited\nTrajectory Planner"];
+  pos [label="Position Controller\nouter loop"];
+  vsum [label="Velocity Demand Sum\nvelocity FF + position correction"];
+  vel [label="Velocity Controller\nmiddle loop"];
+  tc [label="Torque/Current\nRequest Generator"];
+  foc [label="FOC Current Controller\ninner id/iq PI loops"];
+  pwm [label="SVPWM / PWM"];
+  inv [label="Gate Driver / Inverter / Motor"];
+  joy [label="Joystick Conditioning\ndeadband, scaling, accel limit, soft-limit", fillcolor="#ECFDF5"];
+  pv [label="Profile Velocity Conditioner\nramp, accel limit, soft-limit", fillcolor="#ECFDF5"];
+  tq [label="Torque/Current Mode", fillcolor="#ECFDF5"];
+  step [label="Commissioning Step Injection\nposition / velocity / current", fillcolor="#FFF7ED"];
+  mode -> traj [label="profile position"];
+  traj -> pos [label="position demand"];
+  pos -> vsum [label="velocity correction"];
+  traj -> vsum [label="velocity FF"];
+  vsum -> vel;
+  vel -> tc [label="feedback correction"];
+  traj -> tc [label="acceleration FF"];
+  tc -> foc [label="id/iq command"];
+  foc -> pwm -> inv;
+  mode -> joy [label="joystick velocity"];
+  joy -> vel;
+  mode -> pv [label="profile velocity"];
+  pv -> vel;
+  mode -> tq [label="torque/current"];
+  tq -> tc;
+  step -> pos [style=dashed];
+  step -> vel [style=dashed];
+  step -> foc [style=dashed];
+}

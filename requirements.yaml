@@ -1,0 +1,75 @@
+target:
+  language: C
+  mcu: STM32G474RET3
+  cubemx_owned_by_user: true
+  internal_units: SI
+  numeric_strategy: mixed_float_with_optional_cordic
+architecture:
+  axis_scope: single_reusable_axis_module
+  network_mcu_external_protocol: not_fixed
+  object_dictionary:
+    network_mcu: real_index_subindex_od
+    motor_control_mcu: real_index_subindex_od
+  inter_mcu:
+    transport: SPI
+    access: [object_read_write, cyclic_process_data]
+  initial_motor_backend: three_shunt_bldc_pmsm_foc
+  future_motor_backend: brushed_dc_hbridge
+feedback:
+  initial_position_feedback: configurable_ssi_absolute_encoder
+  future_position_feedback: quadrature_encoder
+  velocity_estimate_default: position_tracking_observer     # ADR-003
+  velocity_estimate_fallback: finite_difference_lowpass     # ADR-003
+  velocity_estimate_runtime_selectable: true                # ADR-003
+loops:
+  fast_loop_hz: 20000
+  motion_loop_hz: [1000, 2000]
+  slow_loop_hz: [10, 100]
+trajectory:
+  type: jerk_limited_s_curve
+  requested_time_important: true
+  may_time_stretch: true
+  must_report_time_stretched: true
+  supports_nonzero_start_velocity_initially: true
+  target_velocity_initially_zero: true
+control:
+  reusable_pid_block: true
+  position_controller: configurable_pid_default_p
+  velocity_controller: configurable_pid_default_pi
+  current_controller: dual_pi_id_iq
+faults:
+  severity_based: true
+  matrix_required: true
+persistence:
+  simple_flash_backed_store: true
+  fields: [version, crc, defaults, factory_reset]
+tests:
+  level: basic_module_tests
+
+# ---- Project direction decisions (see docs/decisions) ----
+project_scope:                                              # ADR-001
+  build_targets: [motor_control_mcu]
+  network_mcu: out_of_scope_separate_project
+  inter_mcu_spi_contract: frozen_boundary
+  spi_payloads_to_complete: [od_read_resp, od_write_resp, heartbeat, error]
+build:                                                      # ADR-002
+  migration: clean_room_from_specs
+  bringup: incremental_on_target_swd_live_watch
+  validation: golden_reference_vs_bldc_axis_controller
+  host_tests: optional_unity
+hardware:                                                   # ADR-004
+  config_model: per_board_profile
+  initial_profile: proven_reference_board
+  motor_model: runtime_config
+board_profile_0:                                            # ADR-004
+  current_sense: {shunt_ohm: 0.01, amp_gain: 5.18, zero_offset_v: 1.71, adc_vref_v: 3.3, adc_full_scale: 4096}
+  pwm: {frequency_hz: 20000, period_counts: 4250}
+  encoder: {backend: ssi, counts_per_rev: 2097152, bits: 21, invert_direction: true}
+  values_to_confirm_per_board: [vbus_divider_ratio, deadtime_counts, temp_sense_scaling, phase_current_signs]
+motor_model_default:                                        # ADR-004
+  part: maxon_500267_ec90_flat
+  pole_pairs: 11
+  resistance_ohm: 0.844
+  inductance_h: 0.00107
+  kt_nm_per_a: 0.231
+  rotor_inertia_kg_m2: 0.000506

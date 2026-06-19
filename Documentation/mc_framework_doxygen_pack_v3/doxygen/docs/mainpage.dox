@@ -1,0 +1,14 @@
+/**
+@mainpage Motor Controller Firmware Framework v3
+
+@section scope Scope
+Single reusable motor-axis module implemented in C for STM32G474RET3, integrated into a CubeMX-generated project. Initial motor backend is three-shunt BLDC/PMSM FOC. The architecture preserves a future brushed DC backend.
+
+@section architecture Architecture
+\dotfile overall.dot "Overall MCU and OD boundary"
+\dotfile command_paths.dot "Command paths and nested loops"
+\dotfile timing.dot "Timing domains"
+
+@section ai AI Coding-Agent Rule
+Do not modify CubeMX-generated code except USER CODE sections. Keep mc_* modules independent, C-only, SI units internally, no dynamic allocation in fast real-time paths.
+*/

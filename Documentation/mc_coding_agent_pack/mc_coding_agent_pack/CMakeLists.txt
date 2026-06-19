@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(mc_framework_agent_pack C)
+set(CMAKE_C_STANDARD 99)
+include_directories(include)
+file(GLOB MC_SOURCES src/*.c)
+add_library(mc_framework ${MC_SOURCES})

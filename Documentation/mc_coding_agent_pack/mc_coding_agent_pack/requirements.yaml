@@ -1,0 +1,44 @@
+target:
+  language: C
+  mcu: STM32G474RET3
+  cubemx_owned_by_user: true
+  internal_units: SI
+  numeric_strategy: mixed_float_with_optional_cordic
+architecture:
+  axis_scope: single_reusable_axis_module
+  network_mcu_external_protocol: not_fixed
+  object_dictionary:
+    network_mcu: real_index_subindex_od
+    motor_control_mcu: real_index_subindex_od
+  inter_mcu:
+    transport: SPI
+    access: [object_read_write, cyclic_process_data]
+  initial_motor_backend: three_shunt_bldc_pmsm_foc
+  future_motor_backend: brushed_dc_hbridge
+feedback:
+  initial_position_feedback: configurable_ssi_absolute_encoder
+  future_position_feedback: quadrature_encoder
+loops:
+  fast_loop_hz: 20000
+  motion_loop_hz: [1000, 2000]
+  slow_loop_hz: [10, 100]
+trajectory:
+  type: jerk_limited_s_curve
+  requested_time_important: true
+  may_time_stretch: true
+  must_report_time_stretched: true
+  supports_nonzero_start_velocity_initially: true
+  target_velocity_initially_zero: true
+control:
+  reusable_pid_block: true
+  position_controller: configurable_pid_default_p
+  velocity_controller: configurable_pid_default_pi
+  current_controller: dual_pi_id_iq
+faults:
+  severity_based: true
+  matrix_required: true
+persistence:
+  simple_flash_backed_store: true
+  fields: [version, crc, defaults, factory_reset]
+tests:
+  level: basic_module_tests

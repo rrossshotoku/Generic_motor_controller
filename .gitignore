@@ -1,0 +1,22 @@
+# Build artifacts
+/Debug/
+/Release/
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+*.cyclo
+
+# Eclipse / STM32CubeIDE
+.metadata/
+
+# OS / editor junk
+Thumbs.db
+.DS_Store
+*.swp
+*~

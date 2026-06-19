@@ -1,0 +1,11 @@
+/** @defgroup mc_core Core Types and Utilities */
+/** @defgroup mc_od Object Dictionary */
+/** @defgroup mc_spi SPI Inter-MCU Protocol */
+/** @defgroup mc_motion Motion Planning and Conditioning */
+/** @defgroup mc_control Position, Velocity and Current Control */
+/** @defgroup mc_backend Motor-Control Backends */
+/** @defgroup mc_feedback Feedback and State Estimation */
+/** @defgroup mc_fault_supervisor Fault and Safety Supervisor */
+/** @defgroup mc_calibration Calibration and Homing */
+/** @defgroup mc_persistence Persistent Storage */
+/** @defgroup mc_scheduler Real-Time Scheduling */

@@ -1,0 +1,10 @@
+/**
+@page implementation_notes Implementation Notes
+
+- Fast loop: 20 kHz, no blocking, no flash, no slow OD operations.
+- Motion loop: 1-2 kHz, trajectory, state estimator, position and velocity loops.
+- Slow loop: 10-100 Hz, communications, diagnostics, persistence service.
+- Rate crossings use explicit buffers.
+- Internal units are SI.
+- BLDC-specific id/iq, electrical angle and SVPWM stay inside the BLDC/FOC backend.
+*/

@@ -1,0 +1,14 @@
+/**
+@mainpage Motor Controller Coding-Agent Framework
+
+@section scope Scope
+Single reusable motor-axis firmware framework in C for STM32G474RET3. Initial backend is three-shunt BLDC/PMSM FOC with SSI absolute encoder. Architecture preserves future brushed DC and quadrature-encoder backends.
+
+@section diagrams Diagrams
+\dotfile architecture.dot "Overall Architecture"
+\dotfile command_paths.dot "Command Paths and Nested Loops"
+\dotfile timing.dot "Timing Domains"
+
+@section agent Coding-Agent Rule
+Read AGENT_README_FIRST.md before implementing. Do not modify CubeMX generated code except USER CODE sections. Implement one module at a time and keep code compileable after each task.
+*/

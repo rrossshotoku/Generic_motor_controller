@@ -1,0 +1,11 @@
+
+digraph G {
+  graph [rankdir=TB, bgcolor="white", splines=ortho];
+  node [shape=box, style="rounded,filled", fillcolor="#F7F9FB", color="#4B5563", fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9, color="#374151"];
+  subgraph cluster_fast { label="Fast loop - 20 kHz"; color="#CBD5E1"; adc [label="PWM-triggered ADC\ncurrent sampling"]; angle [label="Electrical angle\nfrom encoder conversion"]; foc [label="FOC current update"]; pwm [label="PWM duty update"]; adc -> foc; angle -> foc; foc -> pwm; }
+  subgraph cluster_medium { label="Medium loop - 1-2 kHz"; color="#CBD5E1"; enc [label="SSI position sample"]; est [label="State estimator\nposition/velocity"]; traj [label="Trajectory/conditioning"]; ctrl [label="Position + velocity loops"]; cmd [label="Torque/current request"]; enc -> est -> ctrl; traj -> ctrl -> cmd; }
+  subgraph cluster_slow { label="Slow loop - 10-100 Hz"; color="#CBD5E1"; od [label="OD sync + mode update"]; fault [label="Fault/limits/diagnostics"]; store [label="persistent store service"]; od -> fault -> store; }
+  cmd -> foc [label="double-buffered command"];
+  fault -> foc [label="enable/inhibit"];
+}

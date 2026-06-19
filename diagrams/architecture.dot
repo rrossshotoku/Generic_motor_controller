@@ -1,0 +1,18 @@
+digraph G {
+  graph [rankdir=LR, bgcolor="white", splines=ortho, nodesep=0.55, ranksep=0.8];
+  node [shape=box, style="rounded,filled", fillcolor="#F7F9FB", color="#4B5563", fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9, color="#374151"];
+  client [label="External\nNetwork Client"];
+  proto [label="Network Protocol\nnot fixed"];
+  netod [label="Network MCU\nCiA 402-style OD"];
+  spi [label="SPI Link\nframed protocol\nOD access + cyclic PD"];
+  motod [label="Motor MCU\nInternal OD"];
+  mode [label="Mode Manager\nDrive State Machine"];
+  axis [label="Single Reusable\nMotor-Axis Framework"];
+  backend [label="Motor Backend Interface"];
+  foc [label="Initial Backend:\n3-shunt BLDC/PMSM FOC"];
+  dc [label="Future Backend:\nBrushed DC H-bridge", style="rounded,dashed"];
+  client -> proto -> netod -> spi -> motod -> mode -> axis -> backend;
+  backend -> foc;
+  backend -> dc;
+}
