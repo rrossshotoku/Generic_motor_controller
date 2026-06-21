@@ -74,5 +74,16 @@ revisit if errors appear on-target.
 
 ## Open questions
 
-- On-target SPI2 bring-up: NSS resync robustness, re-arm timing margin, error-recovery tuning.
+- On-target SPI2 bring-up: NSS resync robustness, re-arm timing margin.
 - Mode-manager wiring of the full cyclic command + CiA-402 object scaling.
+
+## Update (on-target): robust error recovery
+
+First on-target run showed many SPI errors + re-arm failures (a cascade): the original error
+handler only called `HAL_SPI_Abort`, leaving both DMA handles BUSY/locked so every re-arm fails.
+Ported the proven `SPI2_Slave_Reset` from `bldc_axis_controller`: on any SPI/DMA error or failed
+re-arm, abort + force-reset **both DMA handles** (State→READY, ErrorCode→NONE, unlock), clear
+OVR/MODF/FRE flags, force `hspi2` READY/unlocked, then re-arm. `g_spi_slave` gains
+`resets`/`err_overrun`/`last_hal_error`. NOTE: persistent overruns usually mean the *master's*
+framing/timing is off (clock exactly 64 bytes, mode 0, NSS per frame, inter-frame gap) — the
+reset keeps the slave resilient but the master must be disciplined.
