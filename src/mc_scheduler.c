@@ -8,6 +8,8 @@
 #include "mc_math.h"
 #include "mc_pwm.h"
 #include "mc_foc.h"
+#include "mc_persistent_store.h"
+#include "mc_calib_data.h"
 #include <math.h>
 
 /** @file mc_scheduler.c
@@ -47,6 +49,20 @@ static MC_Foc_t       s_foc;
 static MC_FocConfig_t s_foc_cfg;
 static bool           s_foc_on;       /* FOC active (for entry reset) */
 static volatile float s_elec_angle;   /* electrical angle published medium->fast (atomic float) */
+
+/* Build the calibration payload from the live config + latch a flash save (written by the
+   slow loop when the power stage is off). See ADR-010. */
+static void calib_save(void)
+{
+    MC_CalibData_t cal;
+    cal.electrical_offset_rad      = s_est_cfg.electrical_offset_rad;
+    cal.current_offset_a_counts    = s_cs.offset_a_counts;
+    cal.current_offset_c_counts    = s_cs.offset_c_counts;
+    cal.mechanical_zero_offset_rad = s_enc_cfg.mechanical_zero_offset_rad;
+    cal.phase_order                = 1;     /* phase-order detection is Phase E */
+    cal.reserved                   = 0u;
+    MC_PersistentStore_RequestSave(&cal, (uint16_t)sizeof cal);
+}
 
 void MC_Framework_Init(void)
 {
@@ -103,6 +119,22 @@ void MC_Framework_Init(void)
         s_foc_cfg.use_cordic_if_available = false;
     }
     MC_Foc_Init(&s_foc, &s_foc_cfg);
+
+    /* Load persisted calibration (electrical offset + current offsets) if present. */
+    if (MC_PersistentStore_Init() == MC_OK)
+    {
+        MC_CalibData_t cal;
+        if (MC_PersistentStore_Read(&cal, (uint16_t)sizeof cal) == MC_OK)
+        {
+            s_est_cfg.electrical_offset_rad   = cal.electrical_offset_rad;
+            s_enc_cfg.mechanical_zero_offset_rad = cal.mechanical_zero_offset_rad;
+            s_cs.offset_a_counts              = cal.current_offset_a_counts;
+            s_cs.offset_c_counts              = cal.current_offset_c_counts;
+            s_cs.calibrated                   = true;
+            g_mc_debug.elec_offset_rad        = cal.electrical_offset_rad;
+            g_mc_debug.store_valid            = true;
+        }
+    }
 
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
@@ -313,10 +345,24 @@ void MC_MotionLoop_1kHz(void)
         s_est_cfg.electrical_offset_rad =
             MC_Math_Wrap2Pi(-s_pos_sample.position_rad * s_est_cfg.pole_pairs);
         g_mc_debug.elec_offset_rad = s_est_cfg.electrical_offset_rad;
+        calib_save();   /* auto-save: written by the slow loop once the drive is off (ADR-010) */
     }
 }
 
 void MC_SlowLoop_10_100Hz(void)
 {
-    /* Stage A1: no supervisory work yet. */
+    /* Persistence: flash writes only when the power stage is off, to avoid disturbing an
+       active drive (ADR-010). The store erases/programs the inactive A/B slot. */
+    if (!s_pwm_on)
+    {
+        if (g_mc_inject.request_factory_reset)
+        {
+            g_mc_inject.request_factory_reset = false;
+            MC_PersistentStore_FactoryReset();
+            g_mc_debug.store_valid = false;
+        }
+        MC_PersistentStore_ServiceSlow();
+        g_mc_debug.store_valid = MC_PersistentStore_HasValid();
+    }
+    g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
 }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (architecture; implementation in Phase E)
+Accepted — architecture; first implementation is **calibration-only** (see Resolution).
 
 ## Date
 
@@ -64,9 +64,30 @@ writes to the slow context honours the real-time rules.
 - docs/spec/14_persistence.md
 - (later) src/mc_params.c, src/mc_persistent_store_stm32g474.c, STM32G474RETX_FLASH.ld
 
+## Resolution (first implementation, 2026-06-21)
+
+User decisions: **calibration-only** payload, **auto-save on alignment capture**, **A/B
+two-page**. Implemented:
+
+- **Generic store** `mc_persistent_store` (HAL-free): `MC_ParamStoreHeader_t` (magic 'MCPF',
+  version, payload_size, **seq**, crc32) + payload; A/B ping-pong; newest valid `seq` wins;
+  verify-after-write before switching the active slot. CRC32 reflected poly 0xEDB88320 (matches
+  the proven `flash_storage`). Save latched, written in the slow/background context.
+- **Flash port** `mc_flash_port` + `mc_flash_port_stm32g474.c` (boundary): two slots = bank 2
+  pages 126/127 at **0x0807F000 / 0x0807F800** (top of flash, opposite the bank-1 code so
+  read-while-write is possible). Dual-bank, 2 KB pages — **confirmed** from the old code, not
+  assumed. Double-word programming.
+- **Payload** `MC_CalibData_t` (24 B): electrical offset, current offsets A/C, mechanical zero,
+  phase order. Embedded in `MC_Params_t` so the full-params schema stays consistent.
+- **Linker**: FLASH length 512K → 508K to reserve the top 4 KB.
+- **Flow**: boot loads + applies the record (electrical offset → estimator, current offsets →
+  current-sense); `request_align_capture` captures the offset AND latches a save; the slow loop
+  writes it **only while the power stage is off** (`s_pwm_on == false`). `request_factory_reset`
+  erases both slots. Watch mirrors: `store_valid`, `store_save_pending`.
+
 ## Open questions
 
-- Exact NV region address/size and the linker reservation.
-- A/B two-page vs single-page (recommend A/B for power-loss safety).
-- Centralise the live configs into an axis/config registry now, or add accessors later?
-- Final `MC_Params_t` field set (review the schema).
+- Centralise live configs into an axis/config registry (needed for the **full** MC_Params_t).
+- Extend to the full params blob (gains/limits/motor/board) — version bump, reloads defaults once.
+- Relax the "drive off" save gate using bank-2 read-while-write, if saving during drive is wanted.
+- Whether current-offset calibration should also auto-save (today only alignment capture does).

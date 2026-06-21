@@ -62,3 +62,11 @@ defaults (no migration initially).
 
 The live module configs must be reachable by capture/apply, so they move to a small axis/config
 registry (currently statics in `mc_scheduler`).
+
+## First implementation (calibration-only, ADR-010 Resolution)
+
+Shipped now: the generic A/B store + a **calibration-only** payload (`MC_CalibData_t`: electrical
+offset, current offsets, mechanical zero, phase order). NV region = bank 2 pages 126/127
+(0x0807F000/0x0807F800), reserved in the linker. Alignment capture auto-latches a save; the slow
+loop writes it when the power stage is off; boot reloads and applies it. The full-params blob
+(gains/limits/motor/board) and the config registry are the next persistence increment.

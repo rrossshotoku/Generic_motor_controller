@@ -30,6 +30,17 @@ control loops, faults, calibration, persistence, or a motor/encoder backend.
 End every working session with a short summary (Implemented / Decisions / Files changed /
 Tests run / Open questions).
 
+## Working principles
+
+- **Hold the final architecture in mind even when building piecewise.** Every incremental
+  bring-up step (the `mc_debug` watch/inject harness, per-stage shortcuts, RAM-only values)
+  must fit the end-state design in `docs/decisions/` + `docs/spec/`. Prefer the
+  architecturally correct seam over a local hack; when a bring-up shortcut is unavoidable,
+  note it and the path back to the target design in the relevant ADR/spec.
+- **Ask, don't assume.** When a change has a forking decision — storage layout, public
+  interfaces, scope, hardware values, anything hard to reverse — ask clarifying questions
+  before implementing instead of guessing. This is a hard requirement, not a preference.
+
 ## Canonical layout
 
 ```

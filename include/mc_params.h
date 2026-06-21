@@ -7,6 +7,7 @@
 #include "mc_ssi_encoder.h"
 #include "mc_state_estimator.h"
 #include "mc_pid.h"
+#include "mc_calib_data.h"
 
 /** @file mc_params.h
  *  @brief Persistable configuration schema (the flash payload). See ADR-010.
@@ -33,11 +34,8 @@ typedef struct
     MC_SsiEncoderConfig_t    ssi;             /**< frame layout, counts/rev, direction, zero. */
     MC_StateEstimatorConfig_t estimator;      /**< pole pairs, electrical offset, observer gains. */
 
-    /* --- Calibration results --- */
-    float  current_offset_a_counts;           /**< Measured zero-current ADC offset, phase A. */
-    float  current_offset_c_counts;           /**< Measured zero-current ADC offset, phase C. */
-    float  mechanical_zero_offset_rad;        /**< Home reference [rad]. */
-    int8_t phase_order;                        /**< +1 / -1, from phase-order detection. */
+    /* --- Calibration results (shared schema with the calibration-only store) --- */
+    MC_CalibData_t calibration;               /**< electrical offset, current offsets, zero, phase order. */
 
     /* --- Controller gains --- */
     MC_PidConfig_t position_pid;
