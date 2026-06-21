@@ -21,6 +21,16 @@ static uint8_t s_tx[MC_IF_FRAME_SIZE] __attribute__((aligned(4)));
 
 static bool arm_dma(void)
 {
+    /* Re-arm from a known-clean state. By the time we re-arm, the previous transfer has
+       completed (or been aborted), but the HAL can leave a DMA handle (typically TX) still
+       marked BUSY -- the master's NSS/SPE toggle races the TX-DMA completion -- so
+       HAL_DMA_Start_IT returns BUSY and the re-arm fails. Force both DMA handles + the SPI to
+       READY, idle SPE (NSS-high), and clear any stale OVR before arming. */
+    __HAL_SPI_DISABLE(&hspi2);
+    __HAL_SPI_CLEAR_OVRFLAG(&hspi2);
+    if (hspi2.hdmatx != 0) { hspi2.hdmatx->State = HAL_DMA_STATE_READY; }
+    if (hspi2.hdmarx != 0) { hspi2.hdmarx->State = HAL_DMA_STATE_READY; }
+    hspi2.State = HAL_SPI_STATE_READY;
     return HAL_SPI_TransmitReceive_DMA(&hspi2, s_tx, s_rx, MC_IF_FRAME_SIZE) == HAL_OK;
 }
 
