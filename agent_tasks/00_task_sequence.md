@@ -73,3 +73,31 @@ Use this as the coding order. Each task should leave the project compileable.
 - Provide `MC_FastLoop_20kHz`, `MC_MotionLoop_1kHz`, and `MC_SlowLoop_10_100Hz` hooks.
 - Use explicit double-buffer or copy/swap between timing domains.
 - Do not block in fast/medium loops.
+
+## Task 11: Bring OD/SPI in line with the Interface contract
+
+Tracking: `../Lightweight_CMC/Interface/REQUESTS.md` REQ-0001 .. REQ-0006.
+Triggered when the network MCU's OD-over-UDP bridge (Phase 5 of `Lightweight_CMC`) shipped
+and the audit identified the gap. ADR-015 already anticipated this work as the deferred
+part of its scope.
+
+- REQ-0001 (blocking) — add the 18 CiA-402 standard OD entries (0x1000, 0x1001, 0x603F,
+  0x6040, 0x6041, 0x6060, 0x6061, 0x607A, 0x6064, 0x6081, 0x6083, 0x6084, 0x6085, 0x60FF,
+  0x606C, 0x6071, 0x6077). Read/write callbacks route to the owning module (mode manager
+  for controlword/statusword/mode; position/velocity controllers for targets/actuals;
+  faults for error_register/error_code). Scale via `MC_IF_POS_SCALE` / `MC_IF_VEL_SCALE`
+  / `MC_IF_CUR_SCALE` at the OD boundary.
+- REQ-0002 (blocking) — extend `MC_OdStatus_t` with `MC_OD_ERR_NO_SUB` and
+  `MC_OD_ERR_NOT_READY`; update the wire-mapping table in `src/mc_comms.c`.
+- REQ-0003 — add 6 missing manufacturer entries (`0x2000:3,4`, `0x2600:1`, `0x2700:2`,
+  `0x2800:2,3`).
+- REQ-0004 — move `0x2A00` telemetry-map into the OD table with callbacks (currently a
+  special case in `mc_comms.c`).
+- REQ-0005 — stage `ERROR` messages on frame-validation failure instead of silently
+  returning telemetry.
+- REQ-0006 — remove dead `include/mc_spi_protocol.h` types, `MC_SPI_PROTOCOL_VERSION`,
+  `MC_SPI_MAX_PAYLOAD` from `include/mc_config.h`.
+
+Close each REQ in `REQUESTS.md` as you complete it. The work updates ADR-015 (already has
+a *Cross-project status update* section) and `docs/spec/05_object_dictionary.md` (already
+has a *Status* banner pointing here).

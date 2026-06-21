@@ -1,5 +1,14 @@
 # Object Dictionary Specification
 
+> **Status, 2026-06-21 (ADR-017)**: `mc_od.c` now implements the manufacturer `0x2xxx` set
+> **and** the 17 CiA-402 standard `0x1xxx`/`0x6xxx` objects (REQ-0001/0003 done) — RO actuals
+> are mirrored from live state, scaled to wire units; RW objects are stored for the mode manager
+> (E1) to consume. Result codes match the wire (REQ-0002). The only canonical entry still
+> outside the OD table is the **telemetry map `0x2A00`** (REQ-0004, deferred — handled in
+> `mc_comms` for now). Authoritative map: `../../../Lightweight_CMC/Interface/mc_if_od.h`
+> (`MC_IF_OD_OBJECTS`). Request log: `../../../Lightweight_CMC/Interface/REQUESTS.md`.
+
+
 ## OD implementation type
 
 Use a static object table with typed read/write functions.

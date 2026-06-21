@@ -23,12 +23,36 @@ MC_OdStore_t g_od;
     { (idx), (sub), MC_OD_TYPE_U8, MC_OD_ACCESS_RW, &g_od.field, 1u, (lo), (hi), false, true, 0, 0 }
 #define OD_U16(idx, sub, field, lo, hi, persist) \
     { (idx), (sub), MC_OD_TYPE_U16, MC_OD_ACCESS_RW, &g_od.field, 2u, (lo), (hi), false, (persist), 0, 0 }
+/* Generic entry (explicit type/access/flags) — used for the CiA-402 standard objects. */
+#define OD_ENT(idx, sub, type, acc, field, sz, pdo, persist) \
+    { (idx), (sub), (type), (acc), &g_od.field, (sz), 0.0f, 0.0f, (pdo), (persist), 0, 0 }
 
 static const MC_OdEntry_t s_od_table[] =
 {
+    /* --- CiA-402 standard objects (REQ-0001). RW values are stored (mode manager applies
+       them later); RO values are mirrored from live state (scaled) by the scheduler. --- */
+    OD_ENT(0x1000, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RO, device_type,             4u, false, false),
+    OD_ENT(0x1001, 0, MC_OD_TYPE_U8,  MC_OD_ACCESS_RO, error_register,          1u, false, false),
+    OD_ENT(0x603F, 0, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, error_code,              2u, true,  false),
+    OD_ENT(0x6040, 0, MC_OD_TYPE_U16, MC_OD_ACCESS_RW, controlword,             2u, true,  false),
+    OD_ENT(0x6041, 0, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, statusword,              2u, true,  false),
+    OD_ENT(0x6060, 0, MC_OD_TYPE_I8,  MC_OD_ACCESS_RW, modes_of_operation,      1u, true,  false),
+    OD_ENT(0x6061, 0, MC_OD_TYPE_I8,  MC_OD_ACCESS_RO, modes_display,           1u, true,  false),
+    OD_ENT(0x607A, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RW, target_position,         4u, true,  false),
+    OD_ENT(0x6064, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RO, position_actual,         4u, true,  false),
+    OD_ENT(0x6081, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, profile_velocity,        4u, false, true),
+    OD_ENT(0x6083, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, profile_acceleration,    4u, false, true),
+    OD_ENT(0x6084, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, profile_deceleration,    4u, false, true),
+    OD_ENT(0x6085, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, quick_stop_deceleration, 4u, false, true),
+    OD_ENT(0x60FF, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RW, target_velocity,         4u, true,  false),
+    OD_ENT(0x606C, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RO, velocity_actual,         4u, true,  false),
+    OD_ENT(0x6071, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RW, target_torque,           4u, true,  false),
+    OD_ENT(0x6077, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RO, torque_actual,           4u, true,  false),
     /* 0x2000 axis / motor model */
     OD_F32(0x2000, 1, motor_kt_nm_per_a,   MC_OD_ACCESS_RW),
     OD_F32(0x2000, 2, motor_inertia_kg_m2, MC_OD_ACCESS_RW),
+    OD_F32(0x2000, 3, motor_resistance_ohm, MC_OD_ACCESS_RW),
+    OD_F32(0x2000, 4, motor_inductance_h,   MC_OD_ACCESS_RW),
     OD_U16(0x2000, 5, motor_pole_pairs, 1.0f, 50.0f, true),
     /* 0x2200 position controller */
     OD_F32(0x2200, 1, pos_kp, MC_OD_ACCESS_RW),
@@ -63,11 +87,15 @@ static const MC_OdEntry_t s_od_table[] =
     OD_F32_RO(0x2510, 1, tlm_mech_position_rad),
     OD_F32_RO(0x2510, 2, tlm_mech_velocity_rad_s),
     /* 0x2600 faults / limits */
+    OD_ENT(0x2600, 1, MC_OD_TYPE_U32, MC_OD_ACCESS_RO, fault_flags, 4u, true, false),
     OD_F32(0x2600, 2, current_trip_a, MC_OD_ACCESS_RW),
     OD_F32_RO(0x2600, 3, tlm_bus_voltage_v),
     /* 0x2700 calibration / 0x2800 persistence (command + status) */
     OD_U16(0x2700, 1, cal_command, 0.0f, 0.0f, false),
+    OD_ENT(0x2700, 2, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, cal_status, 2u, false, false),
     OD_U16(0x2800, 1, store_save_command, 0.0f, 0.0f, false),
+    OD_ENT(0x2800, 2, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, store_status, 2u, false, false),
+    OD_U16(0x2800, 3, store_factory_reset, 0.0f, 0.0f, false),
     /* 0x2900 commissioning / test injection (placeholders until wired to the inject path) */
     OD_U8 (0x2900, 1, inject_enable, 0.0f, 1.0f),
     OD_U8 (0x2900, 2, inject_target, 0.0f, 3.0f),
@@ -105,9 +133,12 @@ void MC_OdStore_LoadDefaults(void)
     memset(&g_od, 0, sizeof(g_od));
 
     /* Motor model (Maxon 500267) */
-    g_od.motor_kt_nm_per_a   = 0.231f;
-    g_od.motor_inertia_kg_m2 = 0.000506f;
-    g_od.motor_pole_pairs    = 11u;
+    g_od.motor_kt_nm_per_a    = 0.231f;
+    g_od.motor_inertia_kg_m2  = 0.000506f;
+    g_od.motor_resistance_ohm = 0.844f;
+    g_od.motor_inductance_h   = 0.00107f;
+    g_od.motor_pole_pairs     = 11u;
+    g_od.device_type          = 0x00020192u;   /* CiA-402 servo-drive profile */
 
     /* Position controller (D3) */
     g_od.pos_kp = 5.0f;
@@ -149,11 +180,21 @@ const MC_OdEntry_t *MC_Od_Find(uint16_t index, uint8_t subindex)
     return 0;
 }
 
+/* Distinguish "no such subindex" (index present) from "no such object" (REQ-0002). */
+static MC_OdStatus_t od_notfound(uint16_t index)
+{
+    for (uint32_t i = 0u; i < MC_OD_TABLE_COUNT; i++)
+    {
+        if (s_od_table[i].index == index) { return MC_OD_ERR_NO_SUB; }
+    }
+    return MC_OD_ERR_NOT_FOUND;
+}
+
 MC_OdStatus_t MC_Od_Read(uint16_t index, uint8_t subindex, void *dst,
                          uint32_t size_bytes, MC_OdType_t expected_type)
 {
     const MC_OdEntry_t *e = MC_Od_Find(index, subindex);
-    if (e == 0)                              { return MC_OD_ERR_NOT_FOUND; }
+    if (e == 0)                              { return od_notfound(index); }
     if ((e->access & MC_OD_ACCESS_RO) == 0u) { return MC_OD_ERR_ACCESS; }   /* not readable */
     if (e->type != expected_type)            { return MC_OD_ERR_TYPE; }
     const uint32_t n = type_size(e->type);
@@ -167,7 +208,7 @@ MC_OdStatus_t MC_Od_Write(uint16_t index, uint8_t subindex, const void *src,
                           uint32_t size_bytes, MC_OdType_t expected_type)
 {
     const MC_OdEntry_t *e = MC_Od_Find(index, subindex);
-    if (e == 0)                              { return MC_OD_ERR_NOT_FOUND; }
+    if (e == 0)                              { return od_notfound(index); }
     if ((e->access & MC_OD_ACCESS_WO) == 0u) { return MC_OD_ERR_ACCESS; }   /* not writable */
     if (e->type != expected_type)            { return MC_OD_ERR_TYPE; }
     const uint32_t n = type_size(e->type);
@@ -186,7 +227,7 @@ MC_OdStatus_t MC_Od_ReadRaw(uint16_t index, uint8_t subindex, void *dst, uint32_
                             MC_OdType_t *out_type, uint32_t *out_len)
 {
     const MC_OdEntry_t *e = MC_Od_Find(index, subindex);
-    if (e == 0)                              { return MC_OD_ERR_NOT_FOUND; }
+    if (e == 0)                              { return od_notfound(index); }
     if ((e->access & MC_OD_ACCESS_RO) == 0u) { return MC_OD_ERR_ACCESS; }
     const uint32_t n = type_size(e->type);
     if (cap < n)                             { return MC_OD_ERR_SIZE; }

@@ -63,3 +63,25 @@ subset is exactly what the tuning GUI needs; the rest is sequenced with the tran
 - Unified config registry so OD is the single source for ALL configs (folds in observer gains,
   electrical offset; replaces the watch-window inject path).
 - Generating the table directly from the shared X-macro (bindings make it non-trivial).
+
+## Cross-project status update — 2026-06-21
+
+The CMC-side OD-over-UDP bridge (Phase 5 of `Lightweight_CMC`) is now in place. The CMC's
+`app/cia402` stub returns `MC_IF_OD_ERR_NOT_READY` for every OD request — fine for testing
+the network path, but no real motor data flows yet.
+
+The "Scope (F1) deferred" item from the *Decision* section above (CiA-402 standard objects
+0x6xxx + the 0x2A00 telemetry map landing with SPI transport + mode manager) is now formally
+**requested by the network MCU** as:
+
+- `../Lightweight_CMC/Interface/REQUESTS.md` REQ-0001 — 18 CiA-402 standard OD entries.
+- REQ-0002 — extend `MC_OdStatus_t` to match `MC_IfOdResult_t` (add `NO_SUB`, `NOT_READY`).
+- REQ-0003 — 6 missing manufacturer entries (`0x2000:3,4`, `0x2600:1`, `0x2700:2`, `0x2800:2,3`).
+- REQ-0004 — move `0x2A00` telemetry-map into the OD table (currently a special case).
+- REQ-0005 — stage `ERROR` messages on frame-validation failure.
+- REQ-0006 — remove stale duplicate defs (`include/mc_spi_protocol.h`, `MC_SPI_PROTOCOL_VERSION`,
+  `MC_SPI_MAX_PAYLOAD`).
+
+REQ-0001 + REQ-0002 are blocking for end-to-end OD-over-UDP integration; the rest are functional
+/ stylistic. See `Interface/REQUESTS.md` for the full detail (why / what's needed / acceptance).
+Closing each request: change its `Status` to `done` and append a *Discussion* note.

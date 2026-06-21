@@ -15,6 +15,7 @@
 #include "mc_od.h"
 #include "mc_od_store.h"
 #include "mc_comms.h"
+#include "mc_if_od.h"      /* MC_IF_*_SCALE, status/mode bits, persistence magics (shared contract) */
 #include <math.h>
 
 /** @file mc_scheduler.c
@@ -126,6 +127,23 @@ static void od_mirror_live(void)
     g_od.est_obs_kv = g_mc_inject.obs_kv;
     g_od.est_use_observer = g_mc_inject.use_finite_diff_velocity ? 0u : 1u;
     g_od.current_trip_a   = g_mc_inject.current_limit_a;
+
+    /* CiA-402 standard objects (REQ-0001): RO actuals mirrored (scaled to wire units),
+       status/error derived. RW objects (controlword/modes/targets) are stored and consumed
+       by the mode manager (E1); full state-machine behaviour lands there. */
+    g_od.position_actual = (int32_t)(g_mc_debug.mech_position_rad   / MC_IF_POS_SCALE);
+    g_od.velocity_actual = (int32_t)(g_mc_debug.mech_velocity_rad_s / MC_IF_VEL_SCALE);
+    g_od.torque_actual   = (int32_t)(g_mc_debug.iq_meas_a           / MC_IF_CUR_SCALE);
+    g_od.statusword      = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
+                                    | (g_mc_debug.overcurrent_trip ? MC_IF_SW_FAULT : 0u)
+                                    | MC_IF_SW_READY);
+    g_od.modes_display   = g_od.modes_of_operation;   /* echo until the mode manager */
+    g_od.error_code      = 0u;
+    g_od.error_register  = 0u;
+    g_od.fault_flags     = 0u;
+    g_od.motor_resistance_ohm = s_motor.resistance_ohm;
+    g_od.motor_inductance_h   = s_motor.inductance_h;
+    g_od.store_status    = (uint16_t)(MC_PersistentStore_HasValid() ? 1u : 0u);
 }
 
 void MC_Framework_Init(void)
@@ -482,6 +500,18 @@ void MC_MotionLoop_1kHz(void)
 
 void MC_SlowLoop_10_100Hz(void)
 {
+    /* OD-triggered persistence commands (0x2800), via the shared magics. */
+    if (g_od.store_factory_reset == MC_IF_FACTORY_RESET_MAGIC)
+    {
+        g_mc_inject.request_factory_reset = true;
+        g_od.store_factory_reset = 0u;
+    }
+    if (g_od.store_save_command == MC_IF_SAVE_MAGIC)
+    {
+        calib_save();
+        g_od.store_save_command = 0u;
+    }
+
     /* Persistence: flash writes only when the power stage is off, to avoid disturbing an
        active drive (ADR-010). The store erases/programs the inactive A/B slot. */
     if (!s_pwm_on)

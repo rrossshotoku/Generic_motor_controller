@@ -40,6 +40,32 @@ typedef struct
     float    tlm_mech_position_rad, tlm_mech_velocity_rad_s;                 /* 0x2510 */
     float    tlm_bus_voltage_v;                                              /* 0x2600:3 */
     uint16_t cal_status, store_status;
+
+    /* --- REQ-0003 manufacturer additions --- */
+    float    motor_resistance_ohm;   /* 0x2000:3 */
+    float    motor_inductance_h;     /* 0x2000:4 */
+    uint32_t fault_flags;            /* 0x2600:1 */
+    uint16_t store_factory_reset;    /* 0x2800:3 */
+
+    /* --- CiA-402 standard objects (REQ-0001). RW = stored (mode manager applies later);
+       RO = mirrored from live state (scaled) by the scheduler. --- */
+    uint32_t device_type;            /* 0x1000 RO */
+    uint8_t  error_register;         /* 0x1001 RO */
+    uint16_t error_code;             /* 0x603F RO */
+    uint16_t controlword;            /* 0x6040 RW */
+    uint16_t statusword;             /* 0x6041 RO */
+    int8_t   modes_of_operation;     /* 0x6060 RW */
+    int8_t   modes_display;          /* 0x6061 RO */
+    int32_t  target_position;        /* 0x607A RW (scaled) */
+    int32_t  position_actual;        /* 0x6064 RO (scaled) */
+    uint32_t profile_velocity;       /* 0x6081 RW */
+    uint32_t profile_acceleration;   /* 0x6083 RW */
+    uint32_t profile_deceleration;   /* 0x6084 RW */
+    uint32_t quick_stop_deceleration;/* 0x6085 RW */
+    int32_t  target_velocity;        /* 0x60FF RW (scaled) */
+    int32_t  velocity_actual;        /* 0x606C RO (scaled) */
+    int32_t  target_torque;          /* 0x6071 RW (scaled) */
+    int32_t  torque_actual;          /* 0x6077 RO (scaled) */
 } MC_OdStore_t;
 
 /** @brief The single OD backing store instance (defined in mc_od.c). */

@@ -103,6 +103,8 @@ static uint8_t od_result(MC_OdStatus_t s)
         case MC_OD_ERR_TYPE:      return MC_IF_OD_ERR_TYPE;
         case MC_OD_ERR_RANGE:     return MC_IF_OD_ERR_RANGE;
         case MC_OD_ERR_SIZE:      return MC_IF_OD_ERR_SIZE;
+        case MC_OD_ERR_NO_SUB:    return MC_IF_OD_ERR_NO_SUB;
+        case MC_OD_ERR_NOT_READY: return MC_IF_OD_ERR_NOT_READY;
         default:                  return MC_IF_OD_ERR_CALLBACK;
     }
 }
@@ -192,25 +194,27 @@ void MC_Comms_HandleTransaction(const uint8_t *rx, uint8_t *tx_next)
     uint16_t resp_len = 0u;
     uint16_t seq = h->sequence;
 
-    /* Validate frame. */
-    bool ok = true;
-    if (h->sync != MC_IF_SYNC_WORD)                        { ok = false; }
-    else if (h->version != MC_IF_PROTOCOL_VERSION)         { ok = false; }
-    else if (crc16(rx, MC_IF_HEADER_SIZE - 2u) != h->header_crc) { ok = false; g_comms_stats.frames_crc_err++; }
-    else if (h->payload_length > MC_IF_MAX_PAYLOAD)        { ok = false; }
+    /* Validate frame; capture a protocol error class for the ERROR reply (REQ-0005). */
+    uint8_t err_class = MC_IF_ERR_NONE;
+    if (h->sync != MC_IF_SYNC_WORD)                              { err_class = MC_IF_ERR_BAD_SYNC; }
+    else if (h->version != MC_IF_PROTOCOL_VERSION)               { err_class = MC_IF_ERR_BAD_VERSION; }
+    else if (crc16(rx, MC_IF_HEADER_SIZE - 2u) != h->header_crc) { err_class = MC_IF_ERR_HEADER_CRC; g_comms_stats.frames_crc_err++; }
+    else if (h->payload_length > MC_IF_MAX_PAYLOAD)              { err_class = MC_IF_ERR_BAD_LENGTH; }
     else
     {
         const uint8_t *pl = rx + MC_IF_HEADER_SIZE;
         uint16_t pcrc; memcpy(&pcrc, pl + h->payload_length, 2u);
-        if (crc16(pl, h->payload_length) != pcrc)          { ok = false; g_comms_stats.frames_crc_err++; }
+        if (crc16(pl, h->payload_length) != pcrc)               { err_class = MC_IF_ERR_PAYLOAD_CRC; g_comms_stats.frames_crc_err++; }
     }
 
-    if (!ok)
+    if (err_class != MC_IF_ERR_NONE)
     {
         g_comms_stats.frames_bad++;
-        /* Reply with the latest telemetry (don't stall the cyclic stream on a bad frame). */
-        resp_len = build_telemetry(resp_pl);
-        encode(MC_IF_MSG_CYCLIC_STATUS, seq, resp_pl, resp_len, tx_next);
+        /* Stage an ERROR frame, returned on the next transaction (REQ-0005). */
+        MC_IfError_t e; memset(&e, 0, sizeof(e));
+        e.error_class  = err_class;
+        e.ref_sequence = seq;
+        encode(MC_IF_MSG_ERROR, seq, &e, (uint16_t)sizeof(e), tx_next);
         return;
     }
 
@@ -260,8 +264,19 @@ void MC_Comms_HandleTransaction(const uint8_t *rx, uint8_t *tx_next)
         }
 
         case MC_IF_MSG_HEARTBEAT:
+            break;   /* idle frame; reply with telemetry below */
+
         default:
-            break;   /* nothing to apply; reply with telemetry below */
+        {
+            /* Unknown message type -> ERROR (REQ-0005). */
+            g_comms_stats.frames_bad++;
+            MC_IfError_t e; memset(&e, 0, sizeof(e));
+            e.error_class  = MC_IF_ERR_UNKNOWN_MSG;
+            e.detail       = h->message_type;
+            e.ref_sequence = seq;
+            encode(MC_IF_MSG_ERROR, seq, &e, (uint16_t)sizeof(e), tx_next);
+            return;
+        }
     }
 
     /* Build the outgoing frame: an OD response if one was produced, else telemetry. */

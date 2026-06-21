@@ -28,12 +28,14 @@ typedef enum
 typedef enum
 {
     MC_OD_OK = 0,
-    MC_OD_ERR_NOT_FOUND,
+    MC_OD_ERR_NOT_FOUND,   /* index not present */
     MC_OD_ERR_ACCESS,
     MC_OD_ERR_TYPE,
     MC_OD_ERR_RANGE,
     MC_OD_ERR_SIZE,
-    MC_OD_ERR_CALLBACK
+    MC_OD_ERR_CALLBACK,
+    MC_OD_ERR_NO_SUB,      /* index present, subindex absent (-> wire MC_IF_OD_ERR_NO_SUB) */
+    MC_OD_ERR_NOT_READY    /* owning module not ready (-> wire MC_IF_OD_ERR_NOT_READY) */
 } MC_OdStatus_t;
 
 typedef MC_OdStatus_t (*MC_OdReadCallback_t)(void *dst, uint32_t size_bytes);
