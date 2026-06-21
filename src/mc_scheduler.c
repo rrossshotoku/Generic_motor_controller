@@ -12,6 +12,8 @@
 #include "mc_calib_data.h"
 #include "mc_velocity_controller.h"
 #include "mc_current_request.h"
+#include "mc_od.h"
+#include "mc_od_store.h"
 #include <math.h>
 
 /** @file mc_scheduler.c
@@ -72,6 +74,57 @@ static void calib_save(void)
     cal.phase_order                = 1;     /* phase-order detection is Phase E */
     cal.reserved                   = 0u;
     MC_PersistentStore_RequestSave(&cal, (uint16_t)sizeof cal);
+}
+
+/* Apply OD gains (g_od, written via the dictionary) to the live controller configs. Runs in the
+   slow loop = a safe update point. Observer gains and the electrical offset stay on the
+   watch-window / alignment paths for now (see ADR-015). */
+static void od_apply_gains(void)
+{
+    const float kt   = g_od.motor_kt_nm_per_a;
+    const float tlim = g_od.vel_current_limit_a * kt;
+
+    s_vel_cfg.pid.kp = g_od.vel_kp;
+    s_vel_cfg.pid.ki = g_od.vel_ki;
+    s_vel_cfg.pid.kd = g_od.vel_kd;
+    s_vel_cfg.pid.output_min     = -tlim;  s_vel_cfg.pid.output_max     = tlim;
+    s_vel_cfg.pid.integrator_min = -tlim;  s_vel_cfg.pid.integrator_max = tlim;
+    s_vel_cfg.torque_output_limit_nm = tlim;
+    s_torque_cfg.current_limit_a        = g_od.vel_current_limit_a;
+    s_torque_cfg.torque_limit_nm        = tlim;
+    s_torque_cfg.torque_constant_nm_per_a = kt;
+
+    s_foc_cfg.id_pi.kp = g_od.foc_id_kp;  s_foc_cfg.id_pi.ki = g_od.foc_id_ki;
+    s_foc_cfg.iq_pi.kp = g_od.foc_iq_kp;  s_foc_cfg.iq_pi.ki = g_od.foc_iq_ki;
+    s_foc_cfg.voltage_limit_v = g_od.foc_voltage_limit_v;
+
+    s_est_cfg.velocity_filter_hz = g_od.est_velocity_filter_hz;
+    /* current_trip stays on the watch-window inject path during bring-up (read-reflected in
+       od_mirror_live), to avoid a two-writer conflict. */
+}
+
+/* Mirror live state into the OD store so reads return current values (telemetry RO; observer
+   gains / electrical offset reflect their live source). */
+static void od_mirror_live(void)
+{
+    g_od.tlm_vel_demand_rad_s     = g_mc_debug.vel_demand_rad_s;
+    g_od.tlm_vel_actual_rad_s     = g_mc_debug.mech_velocity_rad_s;
+    g_od.tlm_vel_iq_cmd_a         = g_mc_debug.vel_iq_cmd_a;
+    g_od.tlm_id_meas_a            = g_mc_debug.id_meas_a;
+    g_od.tlm_iq_meas_a            = g_mc_debug.iq_meas_a;
+    g_od.tlm_vd_v                 = g_mc_debug.vd_v;
+    g_od.tlm_vq_v                 = g_mc_debug.vq_v;
+    g_od.tlm_electrical_angle_rad = g_mc_debug.elec_angle_rad;
+    g_od.tlm_mech_position_rad    = g_mc_debug.mech_position_rad;
+    g_od.tlm_mech_velocity_rad_s  = g_mc_debug.mech_velocity_rad_s;
+    g_od.tlm_bus_voltage_v        = g_mc_inject.vbus_v;   /* no Vbus sensor yet */
+
+    g_od.est_electrical_offset_rad = s_est_cfg.electrical_offset_rad;
+    g_od.est_obs_kp = g_mc_inject.obs_kp;
+    g_od.est_obs_ki = g_mc_inject.obs_ki;
+    g_od.est_obs_kv = g_mc_inject.obs_kv;
+    g_od.est_use_observer = g_mc_inject.use_finite_diff_velocity ? 0u : 1u;
+    g_od.current_trip_a   = g_mc_inject.current_limit_a;
 }
 
 void MC_Framework_Init(void)
@@ -161,6 +214,9 @@ void MC_Framework_Init(void)
         s_vel_cfg.velocity_error_limit_rad_per_s = 0.0f;
     }
     MC_VelocityController_Init(&s_vel);
+
+    /* Object dictionary: seed defaults (its gains match the configs seeded above). */
+    MC_Od_Init();
 
     /* Load persisted calibration (electrical offset + current offsets) if present. */
     if (MC_PersistentStore_Init() == MC_OK)
@@ -418,6 +474,8 @@ void MC_MotionLoop_1kHz(void)
         g_mc_debug.elec_offset_rad = s_est_cfg.electrical_offset_rad;
         calib_save();   /* auto-save: written by the slow loop once the drive is off (ADR-010) */
     }
+
+    od_mirror_live();   /* publish live state into the OD store */
 }
 
 void MC_SlowLoop_10_100Hz(void)
@@ -436,4 +494,6 @@ void MC_SlowLoop_10_100Hz(void)
         g_mc_debug.store_valid = MC_PersistentStore_HasValid();
     }
     g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
+
+    od_apply_gains();   /* apply OD-written gains to the live controllers (safe update point) */
 }

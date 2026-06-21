@@ -96,3 +96,13 @@ standard objects (0x1xxx/0x6xxx) are scaled integers (factors in that header); m
 objects (0x2xxx: gains, telemetry, calibration, persistence, test-injection) are **float32 SI**.
 The motor MCU's `mc_od` table is generated from that list, mapping each entry to a live
 variable / shadow config / callback.
+
+### Implementation status (ADR-015)
+
+`mc_od.c` implements the engine (typed Find/Read/Write with access/type/size/range checks +
+callbacks) and a **tuning-focused subset** of the map bound to the `g_od` backing store
+(`mc_od_store.h`): gains, key telemetry, limits, motor params (manufacturer objects as float32
+SI). The scheduler seeds it, applies OD-written gains to the live controllers in the slow loop,
+and mirrors telemetry in the medium loop. The CiA-402 standard objects (0x6xxx, with scaling)
+and the 0x2A00 telemetry map are implemented alongside the SPI-slave transport and the mode
+manager.

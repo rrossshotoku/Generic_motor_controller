@@ -40,6 +40,12 @@ Tests run / Open questions).
 - **Ask, don't assume.** When a change has a forking decision — storage layout, public
   interfaces, scope, hardware values, anything hard to reverse — ask clarifying questions
   before implementing instead of guessing. This is a hard requirement, not a preference.
+- **The shared interface is a frozen contract.** `../Lightweight_CMC/Interface/`
+  (`mc_if_protocol.h`, `mc_if_od.h`, `INTERFACE_SPEC.md`, `NETWORK_UDP_SPEC.md`) is shared by
+  the motor MCU, the network MCU, and the PC tool. Any change there MUST be (1) explicitly
+  announced to the user and (2) logged in `Interface/CHANGELOG.md` (what changed, version
+  impact, consumers to update); wire/OD changes bump `MC_IF_PROTOCOL_VERSION`. Never edit it
+  incidentally.
 
 ## Canonical layout
 
