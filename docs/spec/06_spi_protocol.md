@@ -91,3 +91,14 @@ typedef struct __attribute__((packed))
 - If cyclic command timeout occurs, fault manager shall request quick stop if feedback/control valid.
 - If timeout persists or feedback invalid, severe inhibit may disable PWM/current.
 - Invalid object-access requests shall return OD error but not corrupt active motion.
+
+## Authoritative contract (ADR-013)
+
+The binding wire definition now lives in the **shared interface package**
+`../Lightweight_CMC/Interface/` (`mc_if_protocol.h`, `mc_if_od.h`, `INTERFACE_SPEC.md`), which
+both this firmware and the network MCU include. It supersedes the sketch above where they
+differ. Key points: fixed **64-byte full-duplex frames**, CRC16/Modbus over header and payload,
+network MCU = SPI **master** / motor MCU = **slave** (mode 0, 8-bit, MSB-first), OD responses
+**pipelined** and correlated by sequence, the previously-open payloads (OD read/write response,
+heartbeat, error) fully defined, and manufacturer OD objects carried as **float32 SI**. This
+project's `mc_spi_protocol.{h,c}` is to be reconciled to include the shared header.

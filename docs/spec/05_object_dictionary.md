@@ -87,3 +87,12 @@ Each object entry shall define:
 - Writing gains updates inactive/shadow config and is applied at safe update points.
 - Writing calibration commands starts calibration only if mode and safety preconditions allow it.
 - Writing save command requests slow-loop persistent-store operation.
+
+## Authoritative object map (ADR-013)
+
+The concrete OD object list is the `MC_IF_OD_OBJECTS(X)` X-macro in the shared interface package
+`../Lightweight_CMC/Interface/mc_if_od.h` (both MCUs generate their tables from it). CiA-402
+standard objects (0x1xxx/0x6xxx) are scaled integers (factors in that header); manufacturer
+objects (0x2xxx: gains, telemetry, calibration, persistence, test-injection) are **float32 SI**.
+The motor MCU's `mc_od` table is generated from that list, mapping each entry to a live
+variable / shadow config / callback.
