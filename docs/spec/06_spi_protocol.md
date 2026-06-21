@@ -110,6 +110,11 @@ project's `mc_spi_protocol.{h,c}` is to be reconciled to include the shared head
   read/write via `mc_od`, the 0x2A00 telemetry map + gather, pipelined responses) and the
   command dead-man watchdog. Built on `../Lightweight_CMC/Interface` (added to the include path).
 - **F2b (ADR-016):** `mc_spi_slave_stm32g474.c` — SPI2 slave (8-bit, mode 0, hardware NSS),
-  64-byte full-duplex DMA; `HAL_SPI_TxRxCpltCallback` runs the handler per transaction and
-  re-arms; `HAL_SPI_ErrorCallback` recovers. Armed from `main.c`. On-target bring-up: verify NSS
-  resync, re-arm timing, and error recovery with the network MCU master.
+  64-byte full-duplex DMA. **Pipelined double-buffer**: on `HAL_SPI_TxRxCpltCallback` it re-arms
+  immediately with the pre-prepared frame, then runs the handler to fill the next buffer — so
+  re-arm latency is independent of handler work and the slave tolerates back-to-back frames (OD
+  response lands two transactions after its request; seq-correlated, transparent to the master).
+  The SPI2 DMA/IRQ run at **priority 1** (above the 1 kHz medium loop, below the 20 kHz fast loop)
+  so the re-arm is never delayed by the control cascade. `HAL_SPI_ErrorCallback` runs the robust
+  reset. Armed from `main.c`. On-target bring-up: verify NSS resync, re-arm timing, and error
+  recovery with the network MCU master.

@@ -87,3 +87,44 @@ OVR/MODF/FRE flags, force `hspi2` READY/unlocked, then re-arm. `g_spi_slave` gai
 `resets`/`err_overrun`/`last_hal_error`. NOTE: persistent overruns usually mean the *master's*
 framing/timing is off (clock exactly 64 bytes, mode 0, NSS per frame, inter-frame gap) — the
 reset keeps the slave resilient but the master must be disciplined.
+
+## Update (on-target): re-arm priority + pipelined double-buffer
+
+Two further on-target findings, fixed together:
+
+1. **Re-arm raced the control loop (re-arm fails in ~600 ms bursts).** The SPI2 DMA IRQ sat at
+   priority 3, *below* the 1 kHz medium loop (TIM7 = priority 2). When the beat between the
+   master's ~1 kHz frame rate and TIM7 drifted them into phase, the medium loop (blocking SSI
+   read + control cascade) preempted and delayed the per-transaction re-arm, which then missed
+   the master's next frame — a burst of fails once per beat period (~600 ms). Fix: raise
+   `DMA1_Channel5/6` (SPI2 RX/TX) + `SPI2_IRQn` to **priority 1** in `main.c` — above the medium
+   loop, still below the fast loop (priority 0), so the re-arm runs promptly and FOC timing is
+   untouched (handler is bounded, ~10-20 us).
+
+2. **Re-arm latency scaled with handler work (fails + resets when the telemetry map filled).**
+   With the original single buffer the re-arm happened *after* `MC_Comms_HandleTransaction`
+   (frame validate + OD apply + telemetry gather). Subscribing N PDOs made the gather longer and,
+   more importantly, the **master bursts frames back-to-back** when its own main loop is delayed
+   (its `cia402_tick` catches up by firing several 1 ms ticks with no inter-frame gap, e.g. while
+   forwarding telemetry over UDP). A slave that re-arms only after a long handler cannot keep up
+   with a zero-gap burst → desync → fails + resets. Fix: **pipelined double-buffer.** Two TX
+   buffers (`s_armed`, `s_prepared`); on transfer-complete: swap → **re-arm immediately** with the
+   already-prepared frame (just a pointer swap + arm, ~1-2 us) → *then* run the handler to fill the
+   freed buffer for the transaction after next. Re-arm latency is now independent of handler work,
+   so the slave tolerates small / back-to-back gaps.
+
+**Contract impact:** the pipelined double-buffer makes an OD response land **two** transactions
+after its request instead of one. This is **not** a wire/OD change — the master already correlates
+responses by `sequence` (and a 100 ms response timeout), so any pipeline depth is transparent and
+no `MC_IF_PROTOCOL_VERSION` bump or `Interface/CHANGELOG.md` entry is required. Recorded here for
+the network-MCU author's awareness; no action needed their side. Telemetry is likewise one frame
+(~1 ms) older — negligible for 1 kHz graphing/tuning.
+
+**Master-side recommendation (logged for the network MCU, not a contract change):** the slave is
+now burst-tolerant, but the master's tick catch-up (`s_last_tick_ms += CYCLE_PERIOD_MS` after a
+delay) still emits frames with no gap, which is fragile in general. Prefer clamping the catch-up
+(`s_last_tick_ms = time_ms()` after a long stall, or send at most one frame per main-loop pass) so
+the 1 ms inter-frame cadence is preserved even when the main loop hitches.
+
+`g_spi_slave` gains `last_rearm_hal` (HAL status of the last re-arm: 0=OK, 1=ERR, 2=BUSY,
+3=TIMEOUT) to diagnose any residual failures from the watch window.
