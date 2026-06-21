@@ -72,6 +72,11 @@ typedef struct
     float    vq_v;                /**< FOC q-axis voltage output [V]. */
     bool     voltage_saturated;   /**< FOC voltage vector hit the limit. */
 
+    /* --- Velocity loop (Stage D2) --- */
+    float    vel_demand_rad_s;    /**< Velocity demand [rad/s]. */
+    float    vel_torque_cmd_nm;   /**< Velocity-loop torque request [Nm]. */
+    float    vel_iq_cmd_a;        /**< iq command from the velocity loop [A]. */
+
     /* --- Persistence (flash param store) --- */
     bool     store_valid;         /**< A valid calibration record is loaded/stored. */
     bool     store_save_pending;  /**< A save is latched, awaiting the slow loop (drive off). */
@@ -98,8 +103,10 @@ typedef struct
 
     /* --- FOC current loop (Stage D1; gated by inject_enable) --- */
     bool  foc_enable;            /**< Select the closed FOC current loop (vs open-loop drive). */
-    float iq_cmd_a;              /**< q-axis (torque) current command [A]. */
+    float iq_cmd_a;              /**< q-axis (torque) current command [A] (manual, D1). */
     float id_cmd_a;              /**< d-axis current command [A] (usually 0). */
+    bool  velocity_enable;       /**< Select the velocity loop (iq comes from it, not iq_cmd_a). */
+    float velocity_cmd_rad_s;    /**< Velocity demand [rad/s] for the velocity loop. */
     bool  request_factory_reset; /**< Erase the stored calibration (applied when drive is off). */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
 } MC_Inject_t;

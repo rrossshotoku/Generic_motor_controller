@@ -10,6 +10,8 @@
 #include "mc_foc.h"
 #include "mc_persistent_store.h"
 #include "mc_calib_data.h"
+#include "mc_velocity_controller.h"
+#include "mc_current_request.h"
 #include <math.h>
 
 /** @file mc_scheduler.c
@@ -50,6 +52,14 @@ static MC_FocConfig_t s_foc_cfg;
 static bool           s_foc_on;       /* FOC active (for entry reset) */
 static volatile float s_elec_angle;   /* electrical angle published medium->fast (atomic float) */
 
+/* Stage D2: velocity loop + torque/current request (runs in the medium loop). */
+static MC_MotorModel_t               s_motor;
+static MC_VelocityController_t       s_vel;
+static MC_VelocityControllerConfig_t s_vel_cfg;
+static MC_TorqueModelConfig_t        s_torque_cfg;
+static volatile float                s_iq_cmd_published;  /* velocity-loop iq, medium->fast (atomic) */
+static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
+
 /* Build the calibration payload from the live config + latch a flash save (written by the
    slow loop when the power stage is off). See ADR-010. */
 static void calib_save(void)
@@ -72,10 +82,9 @@ void MC_Framework_Init(void)
     MC_SsiEncoder_LoadDefaultConfig(&s_enc_cfg);
     MC_SsiEncoder_Init(&s_enc, &s_enc_cfg);
 
+    MC_MotorModel_LoadDefault(&s_motor);
     {
-        MC_MotorModel_t motor;
-        MC_MotorModel_LoadDefault(&motor);
-        s_est_cfg.pole_pairs            = (float)motor.pole_pairs;
+        s_est_cfg.pole_pairs            = (float)s_motor.pole_pairs;
         s_est_cfg.electrical_offset_rad = 0.0f;
         s_est_cfg.velocity_filter_hz    = 20.0f;
         s_est_cfg.sample_period_s       = MC_MOTION_DT_S;
@@ -95,7 +104,7 @@ void MC_Framework_Init(void)
 
     /* C2 drive defaults (drive stays off until inject_enable is set). */
     g_mc_inject.vbus_v          = 24.0f;   /* set to your actual supply voltage */
-    g_mc_inject.current_limit_a = 2.0f;    /* over-current trip [A] */
+    g_mc_inject.current_limit_a = 3.0f;    /* over-current trip [A] (headroom over ~1.5-2 A breakaway) */
 
     /* D1 FOC current-loop config (ported gains; runs in the fast loop). */
     {
@@ -119,6 +128,39 @@ void MC_Framework_Init(void)
         s_foc_cfg.use_cordic_if_available = false;
     }
     MC_Foc_Init(&s_foc, &s_foc_cfg);
+
+    /* D2 velocity loop + torque model. Gains ported from the proven current-output loop,
+       expressed as torque = old_gain * Kt (net iq identical); output limit = current * Kt. */
+    {
+        const float kt        = s_motor.kt_nm_per_a;          /* 0.231 Nm/A */
+        const float i_lim     = 2.5f;                         /* velocity-loop current limit [A] */
+        const float torque_lim = i_lim * kt;
+
+        s_torque_cfg.inertia_kg_m2                 = s_motor.rotor_inertia_kg_m2;
+        s_torque_cfg.torque_constant_nm_per_a      = kt;
+        s_torque_cfg.static_friction_nm            = 0.0f;    /* FF off until identified */
+        s_torque_cfg.viscous_friction_nm_per_rad_s = 0.0f;
+        s_torque_cfg.current_limit_a               = i_lim;
+        s_torque_cfg.torque_limit_nm               = torque_lim;
+
+        MC_PidConfig_t vpid;
+        vpid.kp                        = 150.0f * kt;         /* ~34.65 Nm/(rad/s) */
+        vpid.ki                        = 1000.0f * kt;        /* 231 */
+        vpid.kd                        = 0.0f;
+        vpid.sample_period_s           = MC_MOTION_DT_S;
+        vpid.output_min                = -torque_lim;
+        vpid.output_max                =  torque_lim;
+        vpid.integrator_min            = -torque_lim;
+        vpid.integrator_max            =  torque_lim;
+        vpid.derivative_filter_hz      = 0.0f;
+        vpid.integrator_enabled        = true;
+        vpid.derivative_enabled        = false;
+        vpid.derivative_on_measurement = true;
+        s_vel_cfg.pid                          = vpid;
+        s_vel_cfg.torque_output_limit_nm       = torque_lim;
+        s_vel_cfg.velocity_error_limit_rad_per_s = 0.0f;
+    }
+    MC_VelocityController_Init(&s_vel);
 
     /* Load persisted calibration (electrical offset + current offsets) if present. */
     if (MC_PersistentStore_Init() == MC_OK)
@@ -259,7 +301,8 @@ void MC_FastLoop_20kHz(void)
 
         MC_FocCurrentCommand_t cmd;
         cmd.id_a   = g_mc_inject.id_cmd_a;
-        cmd.iq_a   = g_mc_inject.iq_cmd_a;
+        /* Velocity mode: iq comes from the medium-loop velocity cascade; else manual (D1). */
+        cmd.iq_a   = g_mc_inject.velocity_enable ? s_iq_cmd_published : g_mc_inject.iq_cmd_a;
         cmd.enable = true;
 
         const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
@@ -336,6 +379,34 @@ void MC_MotionLoop_1kHz(void)
     g_mc_debug.elec_angle_rad      = s_est.electrical.electrical_angle_rad;
     g_mc_debug.enc_valid           = s_pos_sample.valid;
     s_elec_angle = s_est.electrical.electrical_angle_rad;   /* publish to fast loop (atomic float) */
+
+    /* Stage D2: velocity cascade -> torque request -> iq, published to the fast loop. */
+    const bool vel_active = g_mc_inject.inject_enable && g_mc_inject.foc_enable
+                            && g_mc_inject.velocity_enable && !s_oc_trip;
+    if (vel_active)
+    {
+        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); s_vel_on = true; }
+
+        const float vdem = g_mc_inject.velocity_cmd_rad_s;
+        const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
+        const float tcorr = MC_VelocityController_Update(&s_vel, &s_vel_cfg, vdem, vact);
+
+        MC_CurrentRequestDebug_t crd;
+        MC_MotorTorqueRequest_t treq =
+            MC_CurrentRequest_Update(&s_torque_cfg, tcorr, 0.0f /* accel_ff: D3 */, vact, true, &crd);
+        MC_FocCurrentCommand_t fcmd = MC_CurrentRequest_ToFocCommand(&s_torque_cfg, &treq);
+
+        s_iq_cmd_published = fcmd.iq_a;
+        g_mc_debug.vel_demand_rad_s  = vdem;
+        g_mc_debug.vel_torque_cmd_nm = treq.torque_nm;
+        g_mc_debug.vel_iq_cmd_a      = fcmd.iq_a;
+    }
+    else
+    {
+        s_vel_on = false;
+        s_iq_cmd_published = 0.0f;
+        g_mc_debug.vel_iq_cmd_a = 0.0f;
+    }
 
     /* Stage C2: capture the electrical offset so the electrical angle reads 0 at the held
        rotor position (commanded electrical angle 0). */
