@@ -14,6 +14,7 @@
 #include "mc_current_request.h"
 #include "mc_od.h"
 #include "mc_od_store.h"
+#include "mc_comms.h"
 #include <math.h>
 
 /** @file mc_scheduler.c
@@ -217,6 +218,7 @@ void MC_Framework_Init(void)
 
     /* Object dictionary: seed defaults (its gains match the configs seeded above). */
     MC_Od_Init();
+    MC_Comms_Init();   /* SPI protocol handler (transport DMA wired in F2b) */
 
     /* Load persisted calibration (electrical offset + current offsets) if present. */
     if (MC_PersistentStore_Init() == MC_OK)
@@ -496,4 +498,12 @@ void MC_SlowLoop_10_100Hz(void)
     g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
 
     od_apply_gains();   /* apply OD-written gains to the live controllers (safe update point) */
+
+    /* Inter-MCU command dead-man: once a master is present, a stale cyclic-command stream
+       drops the velocity demand to zero (full quick-stop is the fault manager's job, E2).
+       Inert during watch-window bring-up (no master yet). */
+    if (MC_Comms_CommandTimedOut())
+    {
+        g_mc_inject.velocity_cmd_rad_s = 0.0f;
+    }
 }

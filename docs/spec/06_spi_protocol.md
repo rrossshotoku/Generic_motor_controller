@@ -102,3 +102,12 @@ network MCU = SPI **master** / motor MCU = **slave** (mode 0, 8-bit, MSB-first),
 **pipelined** and correlated by sequence, the previously-open payloads (OD read/write response,
 heartbeat, error) fully defined, and manufacturer OD objects carried as **float32 SI**. This
 project's `mc_spi_protocol.{h,c}` is to be reconciled to include the shared header.
+
+### Implementation status
+
+- **F2a (ADR-016):** `mc_comms.c` implements the HAL-free slave protocol logic against the
+  shared headers — per-transaction frame validate + dispatch (cyclic command apply, OD
+  read/write via `mc_od`, the 0x2A00 telemetry map + gather, pipelined responses) and the
+  command dead-man watchdog. Built on `../Lightweight_CMC/Interface` (added to the include path).
+- **F2b (next):** the SPI2-slave DMA boundary (`mc_spi_slave_stm32g474.c`) — 64-byte full-duplex
+  DMA, call the handler per transaction, re-arm on NSS — brought up on-target.

@@ -182,6 +182,28 @@ MC_OdStatus_t MC_Od_Write(uint16_t index, uint8_t subindex, const void *src,
     return MC_OD_OK;
 }
 
+MC_OdStatus_t MC_Od_ReadRaw(uint16_t index, uint8_t subindex, void *dst, uint32_t cap,
+                            MC_OdType_t *out_type, uint32_t *out_len)
+{
+    const MC_OdEntry_t *e = MC_Od_Find(index, subindex);
+    if (e == 0)                              { return MC_OD_ERR_NOT_FOUND; }
+    if ((e->access & MC_OD_ACCESS_RO) == 0u) { return MC_OD_ERR_ACCESS; }
+    const uint32_t n = type_size(e->type);
+    if (cap < n)                             { return MC_OD_ERR_SIZE; }
+    if (e->read_cb != 0)
+    {
+        const MC_OdStatus_t s = e->read_cb(dst, n);
+        if (s != MC_OD_OK) { return s; }
+    }
+    else
+    {
+        memcpy(dst, e->data, n);
+    }
+    if (out_type != 0) { *out_type = e->type; }
+    if (out_len  != 0) { *out_len  = n; }
+    return MC_OD_OK;
+}
+
 MC_OdStatus_t MC_Od_ReadU16(uint16_t index, uint8_t subindex, uint16_t *value)
 { return MC_Od_Read(index, subindex, value, sizeof(*value), MC_OD_TYPE_U16); }
 MC_OdStatus_t MC_Od_WriteU16(uint16_t index, uint8_t subindex, uint16_t value)

@@ -1,0 +1,66 @@
+# ADR-016: SPI inter-MCU protocol handler (slave, F2a)
+
+## Status
+
+Accepted
+
+## Date
+
+2026-06-21
+
+## Context
+
+Putting the OD on the wire for the network MCU. The shared contract
+(`../Lightweight_CMC/Interface/`) defines fixed 64-byte full-duplex frames, CRC16/Modbus,
+cyclic command/telemetry, OD read/write, and the configurable 0x2A00 telemetry map. The
+implementation splits into the HAL-free protocol logic (this ADR, F2a) and the SPI2 DMA boundary
+(F2b).
+
+## Decision
+
+- **`mc_comms.c` (HAL-free)** builds **against the shared headers** (`mc_if_protocol.h`,
+  `mc_if_od.h`) — the single source of truth — so the motor MCU and network MCU agree by
+  construction. (The motor build adds `../Lightweight_CMC/Interface` to its include path.)
+- **Per-transaction handler** `MC_Comms_HandleTransaction(rx, tx_next)`: validate the 64-byte
+  frame (sync/version/header-CRC/payload-CRC); dispatch by type:
+  - `CYCLIC_CMD` → apply (controlword enable, joystick/profile-velocity → velocity demand);
+  - `OD_READ_REQ` → `MC_Od_ReadRaw` → `OD_READ_RESP`;
+  - `OD_WRITE_REQ` → `MC_Od_Write` (or the 0x2A00 map handler) → `OD_WRITE_RESP`.
+  The response to request N is produced as `tx_next` (sent on transaction N+1, pipelined); the
+  default `tx_next` is the cyclic telemetry frame.
+- **Telemetry**: `build_telemetry` emits the 12-byte status header + the mapped blob, gathered
+  from the **0x2A00 map** (owned by `mc_comms`, validated on activation: entries exist, are
+  PDO-mappable, total ≤ 40 B; `map_version` bumped). `MC_Od_ReadRaw` was added to the OD engine.
+- **Command dead-man**: `MC_Comms_CommandTimedOut()` (slow loop) trips after
+  `MC_IF_COMMAND_TIMEOUT_MS` (30 ms) of no fresh cyclic command — but only **once a master has
+  been seen** (inert during watch-window bring-up). On trip the scheduler zeroes the velocity
+  demand (full quick-stop is the fault manager's job, E2).
+
+## Reasoning
+
+Keeping the protocol logic HAL-free and built on the shared headers guarantees both MCUs use the
+identical wire format and OD map, and lets the handler be exercised from the watch window before
+the DMA exists. The pipelined-response model matches the contract and suits an SPI slave.
+
+## Consequences
+
+- New `mc_comms.{h,c}`; `MC_Od_ReadRaw` added; scheduler calls `MC_Comms_Init` + the watchdog.
+- **The motor project now depends on the shared `Interface` headers** (include path) — enforces
+  single-source-of-truth (ADR-013).
+- Cyclic-command apply is minimal (enable + velocity/jog) pending the mode manager (E1); the
+  0x6xxx CiA-402 objects + scaling and the full command set wire up there.
+- **F2b next**: the SPI2-slave DMA boundary (`mc_spi_slave_stm32g474.c`) — arm 64-byte
+  full-duplex DMA, call the handler per transaction, re-arm — brought up on-target.
+
+## Files affected
+
+- include/mc_comms.h, src/mc_comms.c
+- include/mc_od.h, src/mc_od.c (MC_Od_ReadRaw)
+- src/mc_scheduler.c
+- docs/spec/06_spi_protocol.md
+- Interface/CHANGELOG.md [1.0.1] (operational defaults logged)
+
+## Open questions
+
+- SPI2 DMA bring-up specifics (NSS resync, re-arm timing) — F2b.
+- Mode-manager wiring of the full cyclic command + CiA-402 object scaling.

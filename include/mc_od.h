@@ -66,4 +66,9 @@ MC_OdStatus_t MC_Od_WriteI32(uint16_t index, uint8_t subindex, int32_t value);
 MC_OdStatus_t MC_Od_ReadFloat(uint16_t index, uint8_t subindex, float *value);
 MC_OdStatus_t MC_Od_WriteFloat(uint16_t index, uint8_t subindex, float value);
 
+/** @brief Raw read of an entry's bytes (for the SPI OD response and telemetry gather).
+ *  Copies the entry's native size into @p dst (capacity @p cap); reports the actual type/len. */
+MC_OdStatus_t MC_Od_ReadRaw(uint16_t index, uint8_t subindex, void *dst, uint32_t cap,
+                            MC_OdType_t *out_type, uint32_t *out_len);
+
 #endif
