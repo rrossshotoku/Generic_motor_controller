@@ -15,6 +15,7 @@
 #include "mc_od.h"
 #include "mc_od_store.h"
 #include "mc_comms.h"
+#include "mc_mode_manager.h"
 #include "mc_if_od.h"      /* MC_IF_*_SCALE, status/mode bits, persistence magics (shared contract) */
 #include <math.h>
 
@@ -63,6 +64,17 @@ static MC_VelocityControllerConfig_t s_vel_cfg;
 static MC_TorqueModelConfig_t        s_torque_cfg;
 static volatile float                s_iq_cmd_published;  /* velocity-loop iq, medium->fast (atomic) */
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
+
+/* E1: effective drive command (arbitrated commissioning-vs-remote in the medium loop, consumed
+   by the fast/medium loops). Plain scalars, single-writer (medium) / reader (fast) — atomic. */
+static volatile bool  s_eff_drive;        /* run the closed FOC current loop */
+static volatile bool  s_eff_torque_mode;  /* true = direct iq; false = velocity loop */
+static volatile float s_eff_iq_cmd;       /* iq command in torque mode [A] */
+static volatile float s_eff_id_cmd;       /* id command [A] */
+static volatile float s_eff_vel_cmd;      /* velocity demand [rad/s] */
+static volatile bool  s_eff_align;        /* commissioning open-loop align active */
+static volatile float s_eff_align_v;      /* open-loop d-axis voltage [V] */
+static volatile float s_eff_align_angle;  /* open-loop electrical angle [rad] */
 
 /* Build the calibration payload from the live config + latch a flash save (written by the
    slow loop when the power stage is off). See ADR-010. */
@@ -134,10 +146,7 @@ static void od_mirror_live(void)
     g_od.position_actual = (int32_t)(g_mc_debug.mech_position_rad   / MC_IF_POS_SCALE);
     g_od.velocity_actual = (int32_t)(g_mc_debug.mech_velocity_rad_s / MC_IF_VEL_SCALE);
     g_od.torque_actual   = (int32_t)(g_mc_debug.iq_meas_a           / MC_IF_CUR_SCALE);
-    g_od.statusword      = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
-                                    | (g_mc_debug.overcurrent_trip ? MC_IF_SW_FAULT : 0u)
-                                    | MC_IF_SW_READY);
-    g_od.modes_display   = g_od.modes_of_operation;   /* echo until the mode manager */
+    /* statusword + modes_display are owned by the E1 arbiter (above). */
     g_od.error_code      = 0u;
     g_od.error_register  = 0u;
     g_od.fault_flags     = 0u;
@@ -236,7 +245,8 @@ void MC_Framework_Init(void)
 
     /* Object dictionary: seed defaults (its gains match the configs seeded above). */
     MC_Od_Init();
-    MC_Comms_Init();   /* SPI protocol handler (transport DMA wired in F2b) */
+    MC_Comms_Init();        /* SPI protocol handler (transport DMA wired in F2b) */
+    MC_ModeManager_Init();  /* CiA-402 drive state machine (E1) */
 
     /* Load persisted calibration (electrical offset + current offsets) if present. */
     if (MC_PersistentStore_Init() == MC_OK)
@@ -363,11 +373,11 @@ void MC_FastLoop_20kHz(void)
     if (g_mc_inject.clear_fault) { s_oc_trip = false; g_mc_inject.clear_fault = false; }
     if (s_currents.valid && (imax > g_mc_inject.current_limit_a)) { s_oc_trip = true; }
 
-    const bool armed = g_mc_inject.inject_enable && !s_oc_trip && !g_mc_inject.request_offset_cal;
+    const bool blocked = s_oc_trip || g_mc_inject.request_offset_cal;
 
-    if (armed && g_mc_inject.foc_enable)
+    if (!blocked && s_eff_drive)
     {
-        /* Stage D1: closed FOC current loop. */
+        /* Closed FOC current loop (commissioning or remote -- effective command, E1). */
         if (!s_foc_on) { MC_Foc_Reset(&s_foc); s_foc_on = true; }
 
         MC_ElectricalState_t elec;
@@ -376,9 +386,9 @@ void MC_FastLoop_20kHz(void)
         elec.electrical_valid              = true;
 
         MC_FocCurrentCommand_t cmd;
-        cmd.id_a   = g_mc_inject.id_cmd_a;
-        /* Velocity mode: iq comes from the medium-loop velocity cascade; else manual (D1). */
-        cmd.iq_a   = g_mc_inject.velocity_enable ? s_iq_cmd_published : g_mc_inject.iq_cmd_a;
+        cmd.id_a   = s_eff_id_cmd;
+        /* Torque mode: direct iq. Velocity mode: iq from the medium-loop velocity cascade. */
+        cmd.iq_a   = s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published;
         cmd.enable = true;
 
         const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
@@ -398,12 +408,12 @@ void MC_FastLoop_20kHz(void)
     {
         s_foc_on = false;
 
-        const float vd = MC_Math_Clamp(g_mc_inject.align_voltage_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
-        if (armed && (vd != 0.0f))
+        const float vd = MC_Math_Clamp(s_eff_align_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
+        if (!blocked && s_eff_align && (vd != 0.0f))
         {
-            /* Stage C2: open-loop d-axis voltage at the commanded electrical angle. */
+            /* Commissioning open-loop d-axis voltage at the commanded electrical angle (C2). */
             float sin_e, cos_e;
-            MC_Math_SinCos(g_mc_inject.align_angle_rad, &sin_e, &cos_e);
+            MC_Math_SinCos(s_eff_align_angle, &sin_e, &cos_e);
             const float v_alpha = vd * cos_e;   /* Vq = 0 */
             const float v_beta  = vd * sin_e;
             const float v_a = v_alpha;
@@ -456,14 +466,73 @@ void MC_MotionLoop_1kHz(void)
     g_mc_debug.enc_valid           = s_pos_sample.valid;
     s_elec_angle = s_est.electrical.electrical_angle_rad;   /* publish to fast loop (atomic float) */
 
+    /* E1: arbitrate the command source -- commissioning (watch window) vs remote (OD/CiA-402 via
+       the mode manager) -- into the effective command the loops consume. See ADR-018. */
+    {
+        MC_DriveCommand_t dc;
+        dc.controlword               = g_od.controlword;
+        dc.mode_of_operation         = g_od.modes_of_operation;
+        dc.target_position_rad       = (float)g_od.target_position * MC_IF_POS_SCALE;
+        dc.target_velocity_rad_per_s = (float)g_od.target_velocity * MC_IF_VEL_SCALE;
+        dc.target_torque_nm          = 0.0f;
+        dc.requested_time_s          = 0.0f;
+        dc.new_setpoint              = false;
+        dc.halt                      = false;
+        dc.fault_reset               = (g_od.controlword & MC_IF_CW_FAULT_RESET) != 0u;
+
+        MC_FaultState_t fs = {0};
+        fs.severe_active = s_oc_trip;
+        MC_ModeManager_Update(&dc, &fs);
+        const MC_DriveStatus_t ds = MC_ModeManager_GetStatus();
+
+        if (g_mc_inject.inject_enable)
+        {
+            /* Commissioning: identical to the watch-window behaviour. */
+            s_eff_align       = (!g_mc_inject.foc_enable) && (g_mc_inject.align_voltage_v != 0.0f);
+            s_eff_align_v     = g_mc_inject.align_voltage_v;
+            s_eff_align_angle = g_mc_inject.align_angle_rad;
+            s_eff_drive       = g_mc_inject.foc_enable;
+            s_eff_torque_mode = !g_mc_inject.velocity_enable;
+            s_eff_iq_cmd      = g_mc_inject.iq_cmd_a;
+            s_eff_id_cmd      = g_mc_inject.id_cmd_a;
+            s_eff_vel_cmd     = g_mc_inject.velocity_cmd_rad_s;
+            g_od.statusword   = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
+                                         | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
+        }
+        else
+        {
+            /* Remote: the mode manager (OD/CiA-402) drives. Boot-safe (controlword 0 = Disabled). */
+            s_eff_align = false;
+            s_eff_drive = ds.operation_enabled;
+            if (ds.active_mode == MC_MODE_TORQUE_CURRENT)
+            {
+                s_eff_torque_mode = true;
+                s_eff_iq_cmd      = (float)g_od.target_torque * MC_IF_CUR_SCALE;
+                s_eff_id_cmd      = 0.0f;
+            }
+            else if ((ds.active_mode == MC_MODE_PROFILE_VELOCITY) ||
+                     (ds.active_mode == MC_MODE_JOYSTICK_VELOCITY))
+            {
+                s_eff_torque_mode = false;
+                s_eff_vel_cmd     = dc.target_velocity_rad_per_s;
+            }
+            else
+            {
+                s_eff_drive = false;   /* disabled / quick-stop / position (not routed yet) -> safe */
+            }
+            if (dc.fault_reset) { g_mc_inject.clear_fault = true; }   /* clear oc_trip in the fast loop */
+            g_od.statusword    = ds.statusword;
+            g_od.modes_display = g_od.modes_of_operation;
+        }
+    }
+
     /* Stage D2: velocity cascade -> torque request -> iq, published to the fast loop. */
-    const bool vel_active = g_mc_inject.inject_enable && g_mc_inject.foc_enable
-                            && g_mc_inject.velocity_enable && !s_oc_trip;
+    const bool vel_active = s_eff_drive && !s_eff_torque_mode && !s_oc_trip;
     if (vel_active)
     {
         if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); s_vel_on = true; }
 
-        const float vdem = g_mc_inject.velocity_cmd_rad_s;
+        const float vdem = s_eff_vel_cmd;
         const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
         const float tcorr = MC_VelocityController_Update(&s_vel, &s_vel_cfg, vdem, vact);
 

@@ -1,8 +1,7 @@
 #include "mc_comms.h"
 #include "mc_if_protocol.h"   /* shared contract (add ../Lightweight_CMC/Interface to the include path) */
 #include "mc_if_od.h"
-#include "mc_od.h"
-#include "mc_debug.h"         /* g_mc_inject (command apply), g_mc_debug (status) */
+#include "mc_od.h"            /* command apply + status now go through the OD (no harness coupling) */
 #include <string.h>
 
 /** @file mc_comms.c
@@ -57,14 +56,17 @@ static void encode(uint8_t msg_type, uint16_t seq, const void *payload, uint16_t
 static uint16_t build_telemetry(uint8_t *payload)
 {
     MC_IfCyclicStatusHeader_t hdr;
-    hdr.statusword     = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
-                                  | (g_mc_debug.overcurrent_trip ? MC_IF_SW_FAULT : 0u)
-                                  | MC_IF_SW_READY);
-    hdr.mode_display   = (int8_t)(g_mc_inject.velocity_enable ? MC_IF_MODE_PROFILE_VELOCITY
-                                                              : MC_IF_MODE_DISABLED);
-    hdr.node_state     = (uint8_t)(g_mc_debug.overcurrent_trip ? MC_IF_NODE_FAULT
-                                  : (g_mc_debug.pwm_enabled ? MC_IF_NODE_RUNNING : MC_IF_NODE_READY));
-    hdr.error_code     = 0u;
+    uint16_t    sw = 0u, ec = 0u;
+    int8_t      md = 0;
+    MC_OdType_t t; uint32_t n;
+    (void)MC_Od_ReadRaw(0x6041u, 0u, &sw, sizeof sw, &t, &n);   /* statusword (mode manager) */
+    (void)MC_Od_ReadRaw(0x603Fu, 0u, &ec, sizeof ec, &t, &n);   /* error code */
+    (void)MC_Od_ReadRaw(0x6061u, 0u, &md, sizeof md, &t, &n);   /* modes display */
+    hdr.statusword     = sw;
+    hdr.mode_display   = md;
+    hdr.node_state     = (uint8_t)((sw & MC_IF_SW_FAULT) ? MC_IF_NODE_FAULT
+                                  : ((sw & MC_IF_SW_ENABLED) ? MC_IF_NODE_RUNNING : MC_IF_NODE_READY));
+    hdr.error_code     = ec;
     hdr.map_version    = s_map_version;
     hdr.status_counter = s_last_cmd_counter;
 
@@ -148,23 +150,16 @@ static uint8_t map_write(uint8_t sub, const uint8_t *data, uint8_t len)
 /* ===== Cyclic command apply (minimal: enable + velocity/jog). Full mode manager: later. ===== */
 static void apply_cyclic(const MC_IfCyclicCommand_t *c)
 {
-    const bool enable = (c->controlword & MC_IF_CW_ENABLE) != 0u;
-    g_mc_inject.inject_enable = enable;
-    g_mc_inject.foc_enable    = enable;
-
-    if ((c->mode_of_operation == MC_IF_MODE_JOYSTICK_VELOCITY) ||
-        (c->mode_of_operation == MC_IF_MODE_PROFILE_VELOCITY))
-    {
-        g_mc_inject.velocity_enable    = true;
-        g_mc_inject.velocity_cmd_rad_s = (float)c->target_velocity * MC_IF_VEL_SCALE;
-    }
-    else
-    {
-        g_mc_inject.velocity_enable = false;
-    }
+    /* Route the cyclic command into the OD; the mode manager (remote mode) acts on it.
+       Decoupled: no dependency on the bring-up harness (ADR-018). */
+    (void)MC_Od_Write(0x6040u, 0u, &c->controlword,           2u, MC_OD_TYPE_U16);
+    (void)MC_Od_Write(0x6060u, 0u, &c->mode_of_operation,     1u, MC_OD_TYPE_I8);
+    (void)MC_Od_Write(0x607Au, 0u, &c->target_position,       4u, MC_OD_TYPE_I32);
+    (void)MC_Od_Write(0x60FFu, 0u, &c->target_velocity,       4u, MC_OD_TYPE_I32);
+    (void)MC_Od_Write(0x6071u, 0u, &c->target_torque_current, 4u, MC_OD_TYPE_I32);
 
     s_last_cmd_counter = c->command_counter;
-    s_cmd_fresh = true;
+    s_cmd_fresh   = true;
     s_link_active = true;
 }
 
