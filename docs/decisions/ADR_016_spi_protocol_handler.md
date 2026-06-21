@@ -1,4 +1,4 @@
-# ADR-016: SPI inter-MCU protocol handler (slave, F2a)
+# ADR-016: SPI inter-MCU protocol handler + SPI2-slave DMA (F2a + F2b)
 
 ## Status
 
@@ -60,7 +60,19 @@ the DMA exists. The pipelined-response model matches the contract and suits an S
 - docs/spec/06_spi_protocol.md
 - Interface/CHANGELOG.md [1.0.1] (operational defaults logged)
 
+## Resolution (F2b — SPI2-slave DMA boundary)
+
+`mc_spi_slave_stm32g474.c`: SPI2 as slave (8-bit, mode 0, hardware NSS) with RX/TX DMA. Two
+64-byte buffers; `MC_SpiSlave_Init` (called from `main.c` USER CODE after the ADC start) loads
+an idle telemetry frame and arms `HAL_SPI_TransmitReceive_DMA`. On `HAL_SPI_TxRxCpltCallback`
+(SPI2 only — SPI1/SSI uses blocking transfers), it runs `MC_Comms_HandleTransaction(rx, tx)`
+(which fills the next outbound frame) and re-arms. `HAL_SPI_ErrorCallback` recovers (abort +
+rebuild idle + re-arm). The handler runs at the SPI DMA IRQ priority (below the 0/2 control
+loops), does only bounded non-blocking work, and re-arms within the master's ~1 ms inter-frame
+gap. `g_spi_slave` mirrors transaction/error counts. Single-buffer re-arm is adequate at 1 kHz;
+revisit if errors appear on-target.
+
 ## Open questions
 
-- SPI2 DMA bring-up specifics (NSS resync, re-arm timing) — F2b.
+- On-target SPI2 bring-up: NSS resync robustness, re-arm timing margin, error-recovery tuning.
 - Mode-manager wiring of the full cyclic command + CiA-402 object scaling.

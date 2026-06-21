@@ -109,5 +109,7 @@ project's `mc_spi_protocol.{h,c}` is to be reconciled to include the shared head
   shared headers — per-transaction frame validate + dispatch (cyclic command apply, OD
   read/write via `mc_od`, the 0x2A00 telemetry map + gather, pipelined responses) and the
   command dead-man watchdog. Built on `../Lightweight_CMC/Interface` (added to the include path).
-- **F2b (next):** the SPI2-slave DMA boundary (`mc_spi_slave_stm32g474.c`) — 64-byte full-duplex
-  DMA, call the handler per transaction, re-arm on NSS — brought up on-target.
+- **F2b (ADR-016):** `mc_spi_slave_stm32g474.c` — SPI2 slave (8-bit, mode 0, hardware NSS),
+  64-byte full-duplex DMA; `HAL_SPI_TxRxCpltCallback` runs the handler per transaction and
+  re-arms; `HAL_SPI_ErrorCallback` recovers. Armed from `main.c`. On-target bring-up: verify NSS
+  resync, re-arm timing, and error recovery with the network MCU master.

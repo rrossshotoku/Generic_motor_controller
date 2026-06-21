@@ -31,6 +31,7 @@
 /* USER CODE BEGIN Includes */
 #include "mc_scheduler.h"
 #include "mc_debug.h"
+#include "mc_spi_slave.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -121,6 +122,8 @@ int main(void)
   HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
   HAL_ADC_Start(&hadc2);                  /* ADC2 slave first (dual regular-simultaneous) */
   HAL_ADC_Start_IT(&hadc1);               /* ADC1 master triggers both; EOC drives the fast loop */
+
+  MC_SpiSlave_Init();                     /* arm the inter-MCU SPI2-slave DMA (F2b) */
   /* USER CODE END 2 */
 
   /* Infinite loop */
