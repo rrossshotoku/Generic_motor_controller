@@ -123,6 +123,13 @@ int main(void)
   HAL_ADC_Start(&hadc2);                  /* ADC2 slave first (dual regular-simultaneous) */
   HAL_ADC_Start_IT(&hadc1);               /* ADC1 master triggers both; EOC drives the fast loop */
 
+  /* Raise the inter-MCU SPI2 slave DMA/IRQ above the 1 kHz medium loop (TIM7 = prio 2) so the
+     per-transaction re-arm is not delayed by the control cascade -- otherwise the re-arm races
+     the master's next frame in bursts (beat between the two ~1 kHz rates). Still below the fast
+     loop (prio 0). */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 1, 0);   /* SPI2 RX DMA */
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 1, 0);   /* SPI2 TX DMA */
+  HAL_NVIC_SetPriority(SPI2_IRQn, 1, 0);
   MC_SpiSlave_Init();                     /* arm the inter-MCU SPI2-slave DMA (F2b) */
   /* USER CODE END 2 */
 

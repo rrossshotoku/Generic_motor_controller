@@ -19,7 +19,8 @@ typedef struct
     uint32_t rearm_fail;     /**< DMA re-arm failures. */
     uint32_t resets;         /**< Robust resets performed. */
     uint32_t err_overrun;    /**< Of `errors`, those that were overruns (OVR). */
-    uint32_t last_hal_error; /**< Last hspi2.ErrorCode (HAL_SPI_ERROR_*). */
+    uint32_t last_hal_error; /**< Last hspi2.ErrorCode at an error callback (HAL_SPI_ERROR_*). */
+    uint32_t last_rearm_hal; /**< HAL_StatusTypeDef of the last re-arm (0=OK,1=ERR,2=BUSY,3=TIMEOUT). */
 } MC_SpiSlaveStats_t;
 
 extern volatile MC_SpiSlaveStats_t g_spi_slave;

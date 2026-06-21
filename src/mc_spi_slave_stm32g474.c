@@ -31,7 +31,10 @@ static bool arm_dma(void)
     if (hspi2.hdmatx != 0) { hspi2.hdmatx->State = HAL_DMA_STATE_READY; }
     if (hspi2.hdmarx != 0) { hspi2.hdmarx->State = HAL_DMA_STATE_READY; }
     hspi2.State = HAL_SPI_STATE_READY;
-    return HAL_SPI_TransmitReceive_DMA(&hspi2, s_tx, s_rx, MC_IF_FRAME_SIZE) == HAL_OK;
+
+    const HAL_StatusTypeDef st = HAL_SPI_TransmitReceive_DMA(&hspi2, s_tx, s_rx, MC_IF_FRAME_SIZE);
+    g_spi_slave.last_rearm_hal = (uint32_t)st;
+    return st == HAL_OK;
 }
 
 /* Robust recovery: clean the SPI + both DMA handles, then re-arm. Safe to call from the
