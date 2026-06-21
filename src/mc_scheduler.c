@@ -598,11 +598,11 @@ void MC_SlowLoop_10_100Hz(void)
 
     od_apply_gains();   /* apply OD-written gains to the live controllers (safe update point) */
 
-    /* Inter-MCU command dead-man: once a master is present, a stale cyclic-command stream
-       drops the velocity demand to zero (full quick-stop is the fault manager's job, E2).
-       Inert during watch-window bring-up (no master yet). */
-    if (MC_Comms_CommandTimedOut())
+    /* Inter-MCU command dead-man (REMOTE mode only): a stale cyclic-command stream zeroes the
+       remote velocity demand (the OD target). Skipped in commissioning so the watch-window
+       command is never clobbered. Full quick-stop is the fault manager's job (E2). */
+    if (!g_mc_inject.inject_enable && MC_Comms_CommandTimedOut())
     {
-        g_mc_inject.velocity_cmd_rad_s = 0.0f;
+        g_od.target_velocity = 0;
     }
 }
