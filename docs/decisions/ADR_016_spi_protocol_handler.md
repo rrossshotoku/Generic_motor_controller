@@ -133,5 +133,17 @@ after a long stall, or send at most one frame per main-loop pass) so the 1 ms ca
 main-loop hitch (e.g. a blocking W6100 send). Being addressed separately by the network-MCU author;
 no motor-side action.
 
+**Resolved 2026-06-22 (master-side).** The network MCU removed the catch-up: `cia402_tick`
+(`Lightweight_CMC/app/cia402/cia402.c`) now does `s_last_tick_ms = now_ms` — after a main-loop
+stall it sends one frame and resumes the 1 ms cadence (drift-tolerant), never a zero-gap burst.
+So the master always presents gapped frames at the cyclic rate, which the pipelined re-arm at
+priority 3 handles with control-loop primacy intact. This is the agreed **split**: the slave is
+*not* designed to absorb true zero-gap bursts (that would require inverting the priority hierarchy,
+rejected above); instead the master guarantees the gap. Cross-project record: `Interface/REQUESTS.md`
+**REQ-0007** — its original "what's needed" (raise the re-arm ISR above the loops; sustain zero
+re-arm gap) is superseded by this split; its acceptance bullet 3 ("back-to-back **at the cyclic
+rate**") is the behaviour actually delivered. End-to-end acceptance (apply a 16-PDO map, zero
+re-arm-fail lines) pending on-target verification.
+
 `g_spi_slave` gains `last_rearm_hal` (HAL status of the last re-arm: 0=OK, 1=ERR, 2=BUSY,
 3=TIMEOUT) to diagnose any residual failures from the watch window.
