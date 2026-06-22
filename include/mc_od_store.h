@@ -54,8 +54,8 @@ typedef struct
     uint16_t error_code;             /* 0x603F RO */
     uint16_t controlword;            /* 0x6040 RW */
     uint16_t statusword;             /* 0x6041 RO */
-    int8_t   modes_of_operation;     /* 0x6060 RW */
-    int8_t   modes_display;          /* 0x6061 RO */
+    int8_t   modes_of_operation;         /* 0x6060 RW */
+    int8_t   modes_of_operation_display; /* 0x6061 RO (name matches the contract for OD generation) */
     int32_t  target_position;        /* 0x607A RW (scaled) */
     int32_t  position_actual;        /* 0x6064 RO (scaled) */
     uint32_t profile_velocity;       /* 0x6081 RW */

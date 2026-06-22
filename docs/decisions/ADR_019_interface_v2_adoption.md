@@ -87,5 +87,7 @@ assumed macro generation) is what surfaced this.
 
 ## Open questions
 
-- Whether to close the drift risk now by moving the motor table to owner-filtered X-macro
-  generation, or keep deferring with REQ-0004.
+- ~~Whether to close the drift risk now by moving the motor table to owner-filtered X-macro
+  generation~~ — **resolved by ADR-020**: the motor OD table is now generated from
+  `MC_IF_OD_OBJECTS(X)` (owner-filtered), so drift is a compile error. `0x2A00` into the OD
+  (REQ-0004) remains the one deferred special-case.

@@ -1,112 +1,71 @@
 #include "mc_od.h"
 #include "mc_od_store.h"
+#include "mc_if_od.h"        /* shared canonical map: MC_IF_OD_OBJECTS(X) + owner/type/access/flags */
 #include <string.h>
 
 /** @file mc_od.c
- *  @brief Static object-dictionary engine + table (tuning subset). See ADR-015.
+ *  @brief Static object-dictionary engine + table. See ADR-015 (engine), ADR-019 (generation).
  *
  *  Typed lookup/read/write with access, type, size and range checks and optional callbacks.
- *  The table is a hand-maintained subset of the shared canonical map
- *  (../Lightweight_CMC/Interface/mc_if_od.h, MC_IF_OD_OBJECTS) bound to @ref g_od; keep the two
- *  in sync (and log any contract change per the Interface CHANGELOG). The CiA-402 standard
- *  objects (0x6xxx) and the 0x2A00 telemetry map are added with the SPI transport + mode manager.
  *
- *  Interface v2 (ADR-019): every canonical entry carries an owner column. This table holds only
- *  MC_IF_OWNER_MOTOR entries; the CMC-owned axis_manager range (0x3xxx) is intentionally absent
- *  (handled by the network MCU), so an OD request for it resolves to NO_OBJECT via od_notfound().
- *  NOTE: because this table is hand-written and NOT generated from MC_IF_OD_OBJECTS(X), the owner
- *  column is not enforced here -- the canonical map and this table can drift silently (see ADR-019).
+ *  The table is GENERATED from the shared canonical map MC_IF_OD_OBJECTS(X)
+ *  (../Lightweight_CMC/Interface/mc_if_od.h), filtered to MC_IF_OWNER_MOTOR entries and bound to
+ *  @ref g_od by field name. The contract is therefore the single source of truth, and drift is
+ *  caught at COMPILE TIME: a motor-owned entry whose `name` has no matching g_od field fails to
+ *  compile (&g_od.<name>), and type/access/PDO/PERSIST follow the contract automatically. CMC-owned
+ *  0x3xxx entries expand to nothing here (-> NO_OBJECT at runtime via od_notfound()).
+ *
+ *  Two things are motor policy, not in the contract, and live alongside the generator below:
+ *  write-range windows (set in MC_Od_Init), and the handful of owner=MOTOR entries handled
+ *  elsewhere (0x2A00 telemetry map -> mc_comms, REQ-0004 deferred), which are skipped.
  */
 
 MC_OdStore_t g_od;
 
-/* Convenience for table entries. */
-#define OD_F32(idx, sub, field, acc) \
-    { (idx), (sub), MC_OD_TYPE_FLOAT32, (acc), &g_od.field, 4u, 0.0f, 0.0f, false, true, 0, 0 }
-#define OD_F32_RO(idx, sub, field) \
-    { (idx), (sub), MC_OD_TYPE_FLOAT32, MC_OD_ACCESS_RO, &g_od.field, 4u, 0.0f, 0.0f, true, false, 0, 0 }
-#define OD_U8(idx, sub, field, lo, hi) \
-    { (idx), (sub), MC_OD_TYPE_U8, MC_OD_ACCESS_RW, &g_od.field, 1u, (lo), (hi), false, true, 0, 0 }
-#define OD_U16(idx, sub, field, lo, hi, persist) \
-    { (idx), (sub), MC_OD_TYPE_U16, MC_OD_ACCESS_RW, &g_od.field, 2u, (lo), (hi), false, (persist), 0, 0 }
-/* Generic entry (explicit type/access/flags) — used for the CiA-402 standard objects. */
-#define OD_ENT(idx, sub, type, acc, field, sz, pdo, persist) \
-    { (idx), (sub), (type), (acc), &g_od.field, (sz), 0.0f, 0.0f, (pdo), (persist), 0, 0 }
+/* ===== Table generation from MC_IF_OD_OBJECTS(X) (ADR-019) =====
+ * The generated rows cast the contract's MC_IF_T_* / MC_IF_A_* straight to the engine's
+ * MC_OdType_t / MC_OdAccess_t. That is valid only while the enums stay value-aligned (mc_if_od.h
+ * documents that they do); these guards make any future drift a compile error. */
+_Static_assert((int)MC_IF_T_U8  == (int)MC_OD_TYPE_U8  && (int)MC_IF_T_U16 == (int)MC_OD_TYPE_U16 &&
+               (int)MC_IF_T_U32 == (int)MC_OD_TYPE_U32 && (int)MC_IF_T_I8  == (int)MC_OD_TYPE_I8  &&
+               (int)MC_IF_T_I16 == (int)MC_OD_TYPE_I16 && (int)MC_IF_T_I32 == (int)MC_OD_TYPE_I32 &&
+               (int)MC_IF_T_F32 == (int)MC_OD_TYPE_FLOAT32, "OD type enum drift vs Interface");
+_Static_assert((int)MC_IF_A_RO == (int)MC_OD_ACCESS_RO && (int)MC_IF_A_WO == (int)MC_OD_ACCESS_WO &&
+               (int)MC_IF_A_RW == (int)MC_OD_ACCESS_RW, "OD access enum drift vs Interface");
 
-static const MC_OdEntry_t s_od_table[] =
+/* Owner=MOTOR entries handled OUTSIDE this table are skipped during generation -- one marker per
+ * field name. 0x2A00:0 tlm_map_count: the telemetry map lives in mc_comms (REQ-0004 deferred). */
+#define OD_SKIP_tlm_map_count   ~, 1
+
+/* PROBE: OD_IS_SKIP(name) -> 1 if OD_SKIP_<name> is defined (as "~, 1"), else 0. */
+#define OD_SECOND_(a, b, ...)   b
+#define OD_IS_SKIP_(...)        OD_SECOND_(__VA_ARGS__, 0)
+#define OD_IS_SKIP(name)        OD_IS_SKIP_(OD_SKIP_##name)
+#define OD_PASTE_(a, b)         a##b
+#define OD_PASTE(a, b)          OD_PASTE_(a, b)
+
+/* Byte size from the contract type (the engine recomputes from type; filled for completeness). */
+#define OD_TSIZE(t) ( (((t)==MC_IF_T_U8)||((t)==MC_IF_T_I8))   ? 1u : \
+                      (((t)==MC_IF_T_U16)||((t)==MC_IF_T_I16)) ? 2u : 4u )
+
+/* Emit one row: bind to &g_od.<name>, cast type/access, derive pdo/persist from the contract
+ * flags. Ranges start as 0/0 (no check), set per policy in MC_Od_Init; no entry uses a callback. */
+#define OD_EMIT_1(idx, sub, name, type, acc, flags)   /* skipped: handled elsewhere */
+#define OD_EMIT_0(idx, sub, name, type, acc, flags) \
+    { (idx), (sub), (MC_OdType_t)(type), (MC_OdAccess_t)(acc), &g_od.name, OD_TSIZE(type), \
+      0.0f, 0.0f, (((flags) & MC_IF_F_PDO) != 0), (((flags) & MC_IF_F_PERSIST) != 0), 0, 0 },
+
+/* Owner dispatch: MOTOR entries emit a row (unless skipped); CMC (0x3xxx) entries vanish. */
+#define OD_ROW_MC_IF_OWNER_CMC(idx, sub, name, type, acc, flags)   /* not built on the motor */
+#define OD_ROW_MC_IF_OWNER_MOTOR(idx, sub, name, type, acc, flags) \
+    OD_PASTE(OD_EMIT_, OD_IS_SKIP(name))(idx, sub, name, type, acc, flags)
+#define OD_ROW(idx, sub, name, type, acc, flags, owner) \
+    OD_ROW_##owner(idx, sub, name, type, acc, flags)
+
+/* Non-const: MC_Od_Init patches the few write-range windows (below). */
+static MC_OdEntry_t s_od_table[] =
 {
-    /* --- CiA-402 standard objects (REQ-0001). RW values are stored (mode manager applies
-       them later); RO values are mirrored from live state (scaled) by the scheduler. --- */
-    OD_ENT(0x1000, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RO, device_type,             4u, false, false),
-    OD_ENT(0x1001, 0, MC_OD_TYPE_U8,  MC_OD_ACCESS_RO, error_register,          1u, false, false),
-    OD_ENT(0x603F, 0, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, error_code,              2u, true,  false),
-    OD_ENT(0x6040, 0, MC_OD_TYPE_U16, MC_OD_ACCESS_RW, controlword,             2u, true,  false),
-    OD_ENT(0x6041, 0, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, statusword,              2u, true,  false),
-    OD_ENT(0x6060, 0, MC_OD_TYPE_I8,  MC_OD_ACCESS_RW, modes_of_operation,      1u, true,  false),
-    OD_ENT(0x6061, 0, MC_OD_TYPE_I8,  MC_OD_ACCESS_RO, modes_display,           1u, true,  false),
-    OD_ENT(0x607A, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RW, target_position,         4u, true,  false),
-    OD_ENT(0x6064, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RO, position_actual,         4u, true,  false),
-    OD_ENT(0x6081, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, profile_velocity,        4u, false, true),
-    OD_ENT(0x6083, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, profile_acceleration,    4u, false, true),
-    OD_ENT(0x6084, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, profile_deceleration,    4u, false, true),
-    OD_ENT(0x6085, 0, MC_OD_TYPE_U32, MC_OD_ACCESS_RW, quick_stop_deceleration, 4u, false, true),
-    OD_ENT(0x60FF, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RW, target_velocity,         4u, true,  false),
-    OD_ENT(0x606C, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RO, velocity_actual,         4u, true,  false),
-    OD_ENT(0x6071, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RW, target_torque,           4u, true,  false),
-    OD_ENT(0x6077, 0, MC_OD_TYPE_I32, MC_OD_ACCESS_RO, torque_actual,           4u, true,  false),
-    /* 0x2000 axis / motor model */
-    OD_F32(0x2000, 1, motor_kt_nm_per_a,   MC_OD_ACCESS_RW),
-    OD_F32(0x2000, 2, motor_inertia_kg_m2, MC_OD_ACCESS_RW),
-    OD_F32(0x2000, 3, motor_resistance_ohm, MC_OD_ACCESS_RW),
-    OD_F32(0x2000, 4, motor_inductance_h,   MC_OD_ACCESS_RW),
-    OD_U16(0x2000, 5, motor_pole_pairs, 1.0f, 50.0f, true),
-    /* 0x2200 position controller */
-    OD_F32(0x2200, 1, pos_kp, MC_OD_ACCESS_RW),
-    OD_F32(0x2200, 2, pos_ki, MC_OD_ACCESS_RW),
-    OD_F32(0x2200, 3, pos_kd, MC_OD_ACCESS_RW),
-    /* 0x2300 velocity controller + telemetry */
-    OD_F32(0x2300, 1, vel_kp, MC_OD_ACCESS_RW),
-    OD_F32(0x2300, 2, vel_ki, MC_OD_ACCESS_RW),
-    OD_F32(0x2300, 3, vel_kd, MC_OD_ACCESS_RW),
-    OD_F32(0x2300, 4, vel_current_limit_a, MC_OD_ACCESS_RW),
-    OD_F32_RO(0x2310, 1, tlm_vel_demand_rad_s),
-    OD_F32_RO(0x2310, 2, tlm_vel_actual_rad_s),
-    OD_F32_RO(0x2310, 3, tlm_vel_iq_cmd_a),
-    /* 0x2400 current/FOC gains + telemetry */
-    OD_F32(0x2400, 1, foc_id_kp, MC_OD_ACCESS_RW),
-    OD_F32(0x2400, 2, foc_id_ki, MC_OD_ACCESS_RW),
-    OD_F32(0x2400, 3, foc_iq_kp, MC_OD_ACCESS_RW),
-    OD_F32(0x2400, 4, foc_iq_ki, MC_OD_ACCESS_RW),
-    OD_F32(0x2400, 5, foc_voltage_limit_v, MC_OD_ACCESS_RW),
-    OD_F32_RO(0x2410, 1, tlm_id_meas_a),
-    OD_F32_RO(0x2410, 2, tlm_iq_meas_a),
-    OD_F32_RO(0x2410, 3, tlm_vd_v),
-    OD_F32_RO(0x2410, 4, tlm_vq_v),
-    OD_F32_RO(0x2410, 5, tlm_electrical_angle_rad),
-    /* 0x2500 encoder / estimator + telemetry */
-    OD_F32(0x2500, 1, est_electrical_offset_rad, MC_OD_ACCESS_RW),
-    OD_F32(0x2500, 2, est_velocity_filter_hz,    MC_OD_ACCESS_RW),
-    OD_F32(0x2500, 3, est_obs_kp, MC_OD_ACCESS_RW),
-    OD_F32(0x2500, 4, est_obs_ki, MC_OD_ACCESS_RW),
-    OD_F32(0x2500, 5, est_obs_kv, MC_OD_ACCESS_RW),
-    OD_U8 (0x2500, 6, est_use_observer, 0.0f, 1.0f),
-    OD_F32_RO(0x2510, 1, tlm_mech_position_rad),
-    OD_F32_RO(0x2510, 2, tlm_mech_velocity_rad_s),
-    /* 0x2600 faults / limits */
-    OD_ENT(0x2600, 1, MC_OD_TYPE_U32, MC_OD_ACCESS_RO, fault_flags, 4u, true, false),
-    OD_F32(0x2600, 2, current_trip_a, MC_OD_ACCESS_RW),
-    OD_F32_RO(0x2600, 3, tlm_bus_voltage_v),
-    /* 0x2700 calibration / 0x2800 persistence (command + status) */
-    OD_U16(0x2700, 1, cal_command, 0.0f, 0.0f, false),
-    OD_ENT(0x2700, 2, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, cal_status, 2u, false, false),
-    OD_U16(0x2800, 1, store_save_command, 0.0f, 0.0f, false),
-    OD_ENT(0x2800, 2, MC_OD_TYPE_U16, MC_OD_ACCESS_RO, store_status, 2u, false, false),
-    OD_U16(0x2800, 3, store_factory_reset, 0.0f, 0.0f, false),
-    /* 0x2900 commissioning / test injection (placeholders until wired to the inject path) */
-    OD_U8 (0x2900, 1, inject_enable, 0.0f, 1.0f),
-    OD_U8 (0x2900, 2, inject_target, 0.0f, 3.0f),
-    OD_F32(0x2900, 3, inject_step_amplitude, MC_OD_ACCESS_RW),
-    OD_U8 (0x2900, 4, inject_step_trigger, 0.0f, 1.0f),
+    MC_IF_OD_OBJECTS(OD_ROW)
 };
 #define MC_OD_TABLE_COUNT (sizeof(s_od_table) / sizeof(s_od_table[0]))
 
@@ -169,9 +128,31 @@ void MC_OdStore_LoadDefaults(void)
     g_od.current_trip_a = 3.0f;
 }
 
+/* Set the write-range window [lo,hi] for one entry (motor policy; ranges aren't in the contract).
+ * A zero-width window (lo==hi) disables the check -- see MC_Od_Write. */
+static void od_set_range(uint16_t index, uint8_t subindex, float lo, float hi)
+{
+    for (uint32_t i = 0u; i < MC_OD_TABLE_COUNT; i++)
+    {
+        if ((s_od_table[i].index == index) && (s_od_table[i].subindex == subindex))
+        {
+            s_od_table[i].min_value = lo;
+            s_od_table[i].max_value = hi;
+            return;
+        }
+    }
+}
+
 void MC_Od_Init(void)
 {
     MC_OdStore_LoadDefaults();
+
+    /* Write-range windows (motor-side policy; the shared contract carries no range info). */
+    od_set_range(0x2000u, 5u, 1.0f, 50.0f);   /* motor_pole_pairs    */
+    od_set_range(0x2500u, 6u, 0.0f,  1.0f);   /* est_use_observer    */
+    od_set_range(0x2900u, 1u, 0.0f,  1.0f);   /* inject_enable       */
+    od_set_range(0x2900u, 2u, 0.0f,  3.0f);   /* inject_target       */
+    od_set_range(0x2900u, 4u, 0.0f,  1.0f);   /* inject_step_trigger */
 }
 
 const MC_OdEntry_t *MC_Od_Find(uint16_t index, uint8_t subindex)

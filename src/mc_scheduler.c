@@ -146,7 +146,7 @@ static void od_mirror_live(void)
     g_od.position_actual = (int32_t)(g_mc_debug.mech_position_rad   / MC_IF_POS_SCALE);
     g_od.velocity_actual = (int32_t)(g_mc_debug.mech_velocity_rad_s / MC_IF_VEL_SCALE);
     g_od.torque_actual   = (int32_t)(g_mc_debug.iq_meas_a           / MC_IF_CUR_SCALE);
-    /* statusword + modes_display are owned by the E1 arbiter (above). */
+    /* statusword + modes_of_operation_display are owned by the E1 arbiter (above). */
     g_od.error_code      = 0u;
     g_od.error_register  = 0u;
     g_od.fault_flags     = 0u;
@@ -522,7 +522,7 @@ void MC_MotionLoop_1kHz(void)
             }
             if (dc.fault_reset) { g_mc_inject.clear_fault = true; }   /* clear oc_trip in the fast loop */
             g_od.statusword    = ds.statusword;
-            g_od.modes_display = g_od.modes_of_operation;
+            g_od.modes_of_operation_display = g_od.modes_of_operation;
         }
     }
 
