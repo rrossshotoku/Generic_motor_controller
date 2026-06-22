@@ -3,7 +3,11 @@
 #include "mc_types.h"
 
 /** @file mc_trajectory.h
- *  @brief Jerk-limited S-curve trajectory planner.
+ *  @brief Trajectory planner (docs/spec/08_trajectory_planner.md). The first cut (D3, ADR-025) is a
+ *         TRAPEZOIDAL profile with a fixed 1/6 : 2/3 : 1/6 (accel : cruise : decel) time split,
+ *         implemented against this (S-curve-shaped) interface; the jerk-limited S-curve fills in the
+ *         jerk segments later. `MC_TrajLimits_t.max_jerk_rad_per_s3` is accepted but unused, and the
+ *         start velocity/accel are accepted but treated as 0 (planned from rest) in this cut.
  *  @ingroup mc_motion
  */
 
@@ -47,6 +51,9 @@ typedef struct
 typedef struct
 {
     float duration_s;
+    float accel_rad_per_s2;   /**< constant accel within the segment; a(t) = accel + jerk*t. The
+                                   trapezoid uses constant-accel segments (jerk 0); the S-curve
+                                   ramps accel via jerk. */
     float jerk_rad_per_s3;
 } MC_TrajSegment_t;
 

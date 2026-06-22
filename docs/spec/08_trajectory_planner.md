@@ -65,3 +65,16 @@ If a new trajectory is requested while active:
 ## Implementation note
 
 The first S-curve implementation may use a conservative robust approach. It is more important that it is bounded, stable, and correctly reports stretching than that it handles every mathematically optimal case.
+
+## Realized — trapezoidal first cut (ADR-025)
+
+`mc_trajectory.c` implements the pre-defined interface (`mc_trajectory.h`) with a **trapezoidal**
+profile as the first cut, ahead of the S-curve: a fixed **1/6 : 2/3 : 1/6** (accel : cruise : decel)
+time split. From rest, `v_cruise = 1.2·D/T` and `a = 7.2·D/T²`; minimum feasible time
+`T_min = max(1.2·D/v_max, √(7.2·D/a_lim))`; a too-short `requested_time` is stretched to `T_min` and
+reported (`time_stretched`, `MC_TRAJ_TIME_STRETCHED`). The move is stored as three constant-accel
+segments (`MC_TrajSegment_t` carries `accel`, generalising to the S-curve's jerk segments). First-cut
+scope: plans from rest (start velocity accepted but treated as 0), zero target velocity/acceleration
+only (else `MC_TRAJ_ERR_UNSUPPORTED_BOUNDARY`), `max_jerk` unused. Host-verified bounded + exact end
+position + correct stretch reporting. S-curve, non-zero start velocity, and a jerk-limit OD entry are
+the next planner pass.
