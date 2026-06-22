@@ -32,6 +32,8 @@ typedef struct
     uint8_t  inject_enable, inject_target, inject_step_trigger; /* 0x2900 */
     float    inject_step_amplitude;
     uint16_t cal_command;                            /* 0x2700:1 */
+    float    cal_align_current_a;                     /* 0x2700:3 electrical-align current [A] (PERSIST) */
+    uint16_t cal_align_hold_ms;                       /* 0x2700:4 electrical-align hold [ms] (PERSIST) */
     uint16_t store_save_command;                     /* 0x2800:1 */
 
     /* --- Telemetry (RO; mirrored from the live control state) --- */

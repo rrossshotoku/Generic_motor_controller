@@ -56,6 +56,14 @@ static float s_home_offset_rad;
 static bool s_oc_trip;      /* latched over-current trip */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
+/* Electrical-alignment routine (ADR-024): current-regulated open-loop drive at electrical angle 0. */
+typedef enum { MC_ALIGN_IDLE = 0, MC_ALIGN_RUN } MC_AlignState_t;
+static MC_AlignState_t s_align_state;
+static uint32_t        s_align_ticks_left;   /* medium-loop (1 ms) ticks left in the drive/hold */
+static float           s_align_vd;           /* regulated open-loop d-axis voltage [V] */
+#define MC_ALIGN_KI_V_PER_A (0.003f)         /* slow Vd current-regulator gain [V per A-err per tick] */
+#define MC_CAL_STATUS_FAULT (0xFFFFu)        /* cal_status (0x2700:2) value on a faulted calibration */
+
 /* Stage D1: FOC current loop. */
 static MC_Foc_t       s_foc;
 static MC_FocConfig_t s_foc_cfg;
@@ -535,6 +543,68 @@ void MC_MotionLoop_1kHz(void)
         }
     }
 
+    /* Electrical-alignment routine (ADR-024). Runs AFTER the arbiter and OVERRIDES the effective
+       command while active: open-loop d-axis voltage at electrical angle 0, with Vd regulated by a
+       slow current-magnitude integrator so the d-axis current (= phase A current at the forced
+       angle) reaches cal_align_current_a -- no FOC/angle dependency. Holds for cal_align_hold_ms,
+       then captures the electrical offset, safe-offs and saves. Aborts to safe-off on over-current. */
+    if (g_mc_inject.request_align_routine)
+    {
+        g_mc_inject.request_align_routine = false;
+        if ((s_align_state == MC_ALIGN_IDLE) && !s_eff_drive && !s_oc_trip)
+        {
+            s_align_state      = MC_ALIGN_RUN;
+            s_align_ticks_left = g_od.cal_align_hold_ms;   /* 1 kHz medium loop -> 1 ms/tick */
+            s_align_vd         = 0.0f;
+            g_od.cal_status    = MC_IF_CAL_ALIGN_CAPTURE;  /* in progress */
+        }
+        else
+        {
+            g_od.cal_status = MC_CAL_STATUS_FAULT;         /* rejected: drive active / busy / fault */
+        }
+    }
+    if (s_align_state == MC_ALIGN_RUN)
+    {
+        if (s_oc_trip)
+        {
+            s_align_state   = MC_ALIGN_IDLE;               /* abort -> safe-off */
+            s_eff_align     = false;
+            s_align_vd      = 0.0f;
+            g_od.cal_status = MC_CAL_STATUS_FAULT;
+        }
+        else
+        {
+            const float i_target = MC_Math_Clamp(g_od.cal_align_current_a, 0.0f,
+                                                 0.9f * g_mc_inject.current_limit_a);  /* under the trip */
+            const float i_d      = s_currents.ia_a;        /* = id at the forced electrical angle 0 */
+            s_align_vd += MC_ALIGN_KI_V_PER_A * (i_target - i_d);
+            s_align_vd  = MC_Math_Clamp(s_align_vd, 0.0f, MC_C2_VD_MAX);
+
+            s_eff_align       = true;
+            s_eff_align_v     = s_align_vd;
+            s_eff_align_angle = 0.0f;
+            s_eff_drive       = false;
+            s_eff_torque_mode = false;
+
+            if (s_align_ticks_left > 0u)
+            {
+                s_align_ticks_left--;
+            }
+            else
+            {
+                /* Hold complete: capture the offset at the now-aligned rotor, safe-off, save. */
+                s_est_cfg.electrical_offset_rad =
+                    MC_Math_Wrap2Pi(-s_pos_sample.position_rad * s_est_cfg.pole_pairs);
+                g_mc_debug.elec_offset_rad = s_est_cfg.electrical_offset_rad;
+                s_eff_align     = false;
+                s_align_vd      = 0.0f;
+                s_align_state   = MC_ALIGN_IDLE;
+                g_od.cal_status = MC_IF_CAL_NONE;          /* done */
+                params_save();
+            }
+        }
+    }
+
     /* Stage D2: velocity cascade -> torque request -> iq, published to the fast loop. */
     const bool vel_active = s_eff_drive && !s_eff_torque_mode && !s_oc_trip;
     if (vel_active)
@@ -606,6 +676,11 @@ void MC_SlowLoop_10_100Hz(void)
     {
         g_mc_inject.request_set_mech_zero = true;
         g_od.cal_status  = MC_IF_CAL_SET_MECH_ZERO;   /* accepted; echoes the last command */
+        g_od.cal_command = MC_IF_CAL_NONE;
+    }
+    if (g_od.cal_command == MC_IF_CAL_ALIGN_CAPTURE)
+    {
+        g_mc_inject.request_align_routine = true;     /* medium loop runs the alignment routine */
         g_od.cal_command = MC_IF_CAL_NONE;
     }
 

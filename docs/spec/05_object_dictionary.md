@@ -35,6 +35,13 @@
 > alongside the calibration; boot restores them into the OD. Edits take effect live immediately;
 > SAVE persists them (explicit — not auto-save, to spare flash). The store format bumped (v2), so
 > existing calibration is invalidated once when you flash this firmware (re-run the captures).
+>
+> **Update, 2026-06-22 (ADR-024, OD electrical alignment)**: new entries `0x2700:3 cal_align_current_a`
+> (F32) + `0x2700:4 cal_align_hold_ms` (U16), both persistent (CHANGELOG [3.2.0], no protocol bump).
+> Set them, then write `0x2700:1 = MC_IF_CAL_ALIGN_CAPTURE (1)` to run a current-regulated open-loop
+> alignment (drive the current at electrical angle 0 for the hold time, capture the offset into
+> `0x2500:1`, save). Starts only when the drive is idle; `0x2700:2 cal_status` = 1 running / 0 done /
+> 0xFFFF fault. Driving current snaps the rotor — keep the axis free.
 
 
 ## OD implementation type

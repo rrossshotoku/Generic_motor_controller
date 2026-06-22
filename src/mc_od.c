@@ -126,6 +126,10 @@ void MC_OdStore_LoadDefaults(void)
     g_od.est_use_observer = 1u;
 
     g_od.current_trip_a = 3.0f;
+
+    /* Electrical-alignment routine defaults (ADR-024). */
+    g_od.cal_align_current_a = 1.0f;     /* d-axis align current [A] */
+    g_od.cal_align_hold_ms   = 1500u;    /* drive/hold duration [ms] */
 }
 
 /* Set the write-range window [lo,hi] for one entry (motor policy; ranges aren't in the contract).

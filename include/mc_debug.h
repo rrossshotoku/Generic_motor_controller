@@ -101,6 +101,7 @@ typedef struct
     float current_limit_a;       /**< Over-current trip threshold [A]. */
     bool  request_align_capture; /**< Capture the electrical offset at the held rotor position. */
     bool  request_set_mech_zero; /**< Capture the current position as the mechanical home (ADR-022). */
+    bool  request_align_routine; /**< Run the current-regulated electrical-alignment routine (ADR-024). */
     bool  clear_fault;           /**< Clear the latched over-current trip. */
 
     /* --- FOC current loop (Stage D1; gated by inject_enable) --- */
