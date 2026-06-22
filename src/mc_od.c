@@ -244,3 +244,43 @@ MC_OdStatus_t MC_Od_ReadFloat(uint16_t index, uint8_t subindex, float *value)
 { return MC_Od_Read(index, subindex, value, sizeof(*value), MC_OD_TYPE_FLOAT32); }
 MC_OdStatus_t MC_Od_WriteFloat(uint16_t index, uint8_t subindex, float value)
 { return MC_Od_Write(index, subindex, &value, sizeof(value), MC_OD_TYPE_FLOAT32); }
+
+/* ===== Persistent-entry serialization (ADR-023): the params store gathers every MC_IF_F_PERSIST
+   OD entry on save and restores them on boot, so the `persistent` flag finally means something. ===== */
+uint16_t MC_Od_GatherPersistent(uint8_t *buf, uint16_t cap)
+{
+    uint16_t n = 0u;
+    for (uint32_t i = 0u; i < MC_OD_TABLE_COUNT; i++)
+    {
+        const MC_OdEntry_t *e = &s_od_table[i];
+        if (!e->persistent) { continue; }
+        const uint32_t sz = type_size(e->type);
+        if (((uint32_t)n + 4u + sz) > (uint32_t)cap) { break; }   /* index(2)+sub(1)+len(1)+value */
+        buf[n++] = (uint8_t)(e->index & 0xFFu);
+        buf[n++] = (uint8_t)(e->index >> 8);
+        buf[n++] = e->subindex;
+        buf[n++] = (uint8_t)sz;
+        memcpy(&buf[n], e->data, sz);
+        n = (uint16_t)(n + sz);
+    }
+    return n;
+}
+
+void MC_Od_RestorePersistent(const uint8_t *buf, uint16_t len)
+{
+    uint16_t i = 0u;
+    while (((uint32_t)i + 4u) <= (uint32_t)len)
+    {
+        const uint16_t index = (uint16_t)((uint16_t)buf[i] | ((uint16_t)buf[i + 1u] << 8));
+        const uint8_t  sub   = buf[i + 2u];
+        const uint8_t  sz    = buf[i + 3u];
+        i = (uint16_t)(i + 4u);
+        if (((uint32_t)i + sz) > (uint32_t)len) { break; }
+        const MC_OdEntry_t *e = MC_Od_Find(index, sub);
+        if ((e != 0) && (type_size(e->type) == sz))
+        {
+            (void)MC_Od_Write(index, sub, &buf[i], sz, e->type);   /* honours access/range checks */
+        }
+        i = (uint16_t)(i + sz);
+    }
+}

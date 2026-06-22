@@ -29,6 +29,12 @@
 > calibration store. `0x2700:2 cal_status` echoes the accepted command. (Single-turn encoder: the
 > home is exact in-session; across reboot only the within-one-rev part recovers — re-home multi-turn
 > axes.)
+>
+> **Update, 2026-06-22 (ADR-023, gain persistence)**: the `MC_IF_F_PERSIST` flag is now **honored**.
+> The SAVE command (`0x2800:1 = 0x7376`) writes every persistent OD entry (gains/config) to flash
+> alongside the calibration; boot restores them into the OD. Edits take effect live immediately;
+> SAVE persists them (explicit — not auto-save, to spare flash). The store format bumped (v2), so
+> existing calibration is invalidated once when you flash this firmware (re-run the captures).
 
 
 ## OD implementation type

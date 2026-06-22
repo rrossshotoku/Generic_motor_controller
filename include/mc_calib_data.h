@@ -22,4 +22,16 @@ typedef struct
                                                no home, so binary-compatible (no store-version bump). */
 } MC_CalibData_t;   /* 24 bytes (multiple of 8) */
 
+/** @brief Full persistable parameter set (ADR-023) = the calibration subset + every persistent
+ *  (MC_IF_F_PERSIST) OD entry. The OD entries are serialized by MC_Od_GatherPersistent as
+ *  {index(LE16), subindex, len, value} records; @ref od_blob_len bytes are valid. This is the
+ *  flash store payload (was bare MC_CalibData_t in v1; MC_PARAM_STORE_VERSION bumped to 2). */
+#define MC_PARAMS_OD_BLOB_MAX (256u)
+typedef struct
+{
+    MC_CalibData_t calib;                          /**< Calibration (offsets, home, phase order). */
+    uint16_t       od_blob_len;                    /**< Valid bytes in od_blob. */
+    uint8_t        od_blob[MC_PARAMS_OD_BLOB_MAX];  /**< Serialized persistent OD entries. */
+} MC_Params_t;
+
 #endif /* MC_CALIB_DATA_H */

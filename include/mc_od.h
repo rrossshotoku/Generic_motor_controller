@@ -73,4 +73,13 @@ MC_OdStatus_t MC_Od_WriteFloat(uint16_t index, uint8_t subindex, float value);
 MC_OdStatus_t MC_Od_ReadRaw(uint16_t index, uint8_t subindex, void *dst, uint32_t cap,
                             MC_OdType_t *out_type, uint32_t *out_len);
 
+/** @brief Serialize every persistent (MC_IF_F_PERSIST) OD entry into @p buf as
+ *  {index(LE16), subindex, len, value} records, for the flash params store (ADR-023).
+ *  @return bytes written (stops early, without overflowing, if @p cap is reached). */
+uint16_t MC_Od_GatherPersistent(uint8_t *buf, uint16_t cap);
+
+/** @brief Restore persistent OD entries previously serialized by MC_Od_GatherPersistent.
+ *  Records whose index/sub is unknown or whose size no longer matches are skipped. */
+void MC_Od_RestorePersistent(const uint8_t *buf, uint16_t len);
+
 #endif

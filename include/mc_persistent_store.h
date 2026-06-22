@@ -12,8 +12,8 @@
  *  MC_CalibData_t). Writes happen only in the slow/background context.
  */
 #define MC_PARAM_STORE_MAGIC       (0x4D435046u) /* 'MCPF' */
-#define MC_PARAM_STORE_VERSION     (1u)
-#define MC_PARAM_STORE_MAX_PAYLOAD (256u)
+#define MC_PARAM_STORE_VERSION     (2u)   /* v2 (ADR-023): payload now MC_Params_t (calib + OD gains) */
+#define MC_PARAM_STORE_MAX_PAYLOAD (512u)
 
 /** @brief On-flash record header (16 bytes; CRC32 covers the first 12 bytes + payload). */
 typedef struct

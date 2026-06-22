@@ -18,6 +18,7 @@
 #include "mc_mode_manager.h"
 #include "mc_if_od.h"      /* MC_IF_*_SCALE, status/mode bits, persistence magics (shared contract) */
 #include <math.h>
+#include <string.h>
 
 /** @file mc_scheduler.c
  *  @brief Timing-domain dispatch (HAL-free). See ADR-006.
@@ -80,18 +81,20 @@ static volatile bool  s_eff_align;        /* commissioning open-loop align activ
 static volatile float s_eff_align_v;      /* open-loop d-axis voltage [V] */
 static volatile float s_eff_align_angle;  /* open-loop electrical angle [rad] */
 
-/* Build the calibration payload from the live config + latch a flash save (written by the
-   slow loop when the power stage is off). See ADR-010. */
-static void calib_save(void)
+/* Gather the full parameter set -- calibration + every persistent OD entry (gains/config) -- and
+   latch a flash save (written by the slow loop when the power stage is off). See ADR-010/023. */
+static void params_save(void)
 {
-    MC_CalibData_t cal;
-    cal.electrical_offset_rad      = s_est_cfg.electrical_offset_rad;
-    cal.current_offset_a_counts    = s_cs.offset_a_counts;
-    cal.current_offset_c_counts    = s_cs.offset_c_counts;
-    cal.mechanical_zero_offset_rad = s_enc_cfg.mechanical_zero_offset_rad;
-    cal.phase_order                = 1;     /* phase-order detection is Phase E */
-    cal.home_offset_rad            = s_home_offset_rad;
-    MC_PersistentStore_RequestSave(&cal, (uint16_t)sizeof cal);
+    MC_Params_t p;
+    memset(&p, 0, sizeof p);
+    p.calib.electrical_offset_rad      = s_est_cfg.electrical_offset_rad;
+    p.calib.current_offset_a_counts    = s_cs.offset_a_counts;
+    p.calib.current_offset_c_counts    = s_cs.offset_c_counts;
+    p.calib.mechanical_zero_offset_rad = s_enc_cfg.mechanical_zero_offset_rad;
+    p.calib.phase_order                = 1;     /* phase-order detection is Phase E */
+    p.calib.home_offset_rad            = s_home_offset_rad;
+    p.od_blob_len = MC_Od_GatherPersistent(p.od_blob, (uint16_t)sizeof p.od_blob);
+    MC_PersistentStore_RequestSave(&p, (uint16_t)sizeof p);
 }
 
 /* Apply OD gains (g_od, written via the dictionary) to the live controller configs. Runs in the
@@ -255,18 +258,19 @@ void MC_Framework_Init(void)
     /* Load persisted calibration (electrical offset + current offsets) if present. */
     if (MC_PersistentStore_Init() == MC_OK)
     {
-        MC_CalibData_t cal;
-        if (MC_PersistentStore_Read(&cal, (uint16_t)sizeof cal) == MC_OK)
+        MC_Params_t p;
+        if (MC_PersistentStore_Read(&p, (uint16_t)sizeof p) == MC_OK)
         {
-            s_est_cfg.electrical_offset_rad   = cal.electrical_offset_rad;
-            s_enc_cfg.mechanical_zero_offset_rad = cal.mechanical_zero_offset_rad;
-            s_cs.offset_a_counts              = cal.current_offset_a_counts;
-            s_cs.offset_c_counts              = cal.current_offset_c_counts;
-            s_cs.calibrated                   = true;
-            s_home_offset_rad                 = cal.home_offset_rad;
-            g_mc_debug.elec_offset_rad        = cal.electrical_offset_rad;
-            g_mc_debug.home_offset_rad        = cal.home_offset_rad;
-            g_mc_debug.store_valid            = true;
+            s_est_cfg.electrical_offset_rad      = p.calib.electrical_offset_rad;
+            s_enc_cfg.mechanical_zero_offset_rad = p.calib.mechanical_zero_offset_rad;
+            s_cs.offset_a_counts                 = p.calib.current_offset_a_counts;
+            s_cs.offset_c_counts                 = p.calib.current_offset_c_counts;
+            s_cs.calibrated                      = true;
+            s_home_offset_rad                    = p.calib.home_offset_rad;
+            MC_Od_RestorePersistent(p.od_blob, p.od_blob_len);  /* gains/config back into g_od */
+            g_mc_debug.elec_offset_rad           = p.calib.electrical_offset_rad;
+            g_mc_debug.home_offset_rad           = p.calib.home_offset_rad;
+            g_mc_debug.store_valid               = true;
         }
     }
 
@@ -566,7 +570,7 @@ void MC_MotionLoop_1kHz(void)
         s_est_cfg.electrical_offset_rad =
             MC_Math_Wrap2Pi(-s_pos_sample.position_rad * s_est_cfg.pole_pairs);
         g_mc_debug.elec_offset_rad = s_est_cfg.electrical_offset_rad;
-        calib_save();   /* auto-save: written by the slow loop once the drive is off (ADR-010) */
+        params_save();   /* auto-save: written by the slow loop once the drive is off (ADR-010) */
     }
 
     /* Set mechanical zero (home): capture the current absolute (multi-turn) position as the home
@@ -576,7 +580,7 @@ void MC_MotionLoop_1kHz(void)
         g_mc_inject.request_set_mech_zero = false;
         s_home_offset_rad          = s_est.mechanical.position_rad;
         g_mc_debug.home_offset_rad = s_home_offset_rad;
-        calib_save();
+        params_save();
     }
 
     od_mirror_live();   /* publish live state into the OD store */
@@ -592,7 +596,7 @@ void MC_SlowLoop_10_100Hz(void)
     }
     if (g_od.store_save_command == MC_IF_SAVE_MAGIC)
     {
-        calib_save();
+        params_save();
         g_od.store_save_command = 0u;
     }
 
