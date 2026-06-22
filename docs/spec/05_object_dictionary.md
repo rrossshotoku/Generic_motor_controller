@@ -21,6 +21,14 @@
 > `velocity_setpoint`, which the motor writes into `0x60FF` each frame (so an SDO write to it is
 > overwritten). The motor's `MC_IF_MODE_JOYSTICK_VELOCITY` and the draft `0x2320:1 joystick_scale`
 > are gone (REQ-0010 — joystick scaling stays CMC-side).
+>
+> **Update, 2026-06-22 (ADR-022, mechanical home)**: new cal command `MC_IF_CAL_SET_MECH_ZERO (3)`
+> on `0x2700:1` (CHANGELOG [3.1.0], no protocol-version bump). Writing it captures the current
+> absolute position as the multi-turn **home**; `0x6064 position_actual` is then reported
+> home-relative, and (once D3 lands) PROFILE_POSITION targets are relative to it. Persisted in the
+> calibration store. `0x2700:2 cal_status` echoes the accepted command. (Single-turn encoder: the
+> home is exact in-session; across reboot only the within-one-rev part recovers — re-home multi-turn
+> axes.)
 
 
 ## OD implementation type

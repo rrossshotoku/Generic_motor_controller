@@ -46,6 +46,10 @@ static MC_StateEstimator_t       s_est;
 static MC_StateEstimatorConfig_t s_est_cfg;
 static MC_PositionSensorSample_t s_pos_sample;
 
+/* Mechanical home (multi-turn): the OD position_actual and (later, D3) position commands are
+   relative to this captured absolute position. Set via the SET_MECH_ZERO cal command; persisted. */
+static float s_home_offset_rad;
+
 /* Stage C2: open-loop drive state. */
 #define MC_C2_VD_MAX 3.0f   /* hard clamp on commanded d-axis voltage [V] */
 static bool s_oc_trip;      /* latched over-current trip */
@@ -86,7 +90,7 @@ static void calib_save(void)
     cal.current_offset_c_counts    = s_cs.offset_c_counts;
     cal.mechanical_zero_offset_rad = s_enc_cfg.mechanical_zero_offset_rad;
     cal.phase_order                = 1;     /* phase-order detection is Phase E */
-    cal.reserved                   = 0u;
+    cal.home_offset_rad            = s_home_offset_rad;
     MC_PersistentStore_RequestSave(&cal, (uint16_t)sizeof cal);
 }
 
@@ -143,7 +147,7 @@ static void od_mirror_live(void)
     /* CiA-402 standard objects (REQ-0001): RO actuals mirrored (scaled to wire units),
        status/error derived. RW objects (controlword/modes/targets) are stored and consumed
        by the mode manager (E1); full state-machine behaviour lands there. */
-    g_od.position_actual = (int32_t)(g_mc_debug.mech_position_rad   / MC_IF_POS_SCALE);
+    g_od.position_actual = (int32_t)((g_mc_debug.mech_position_rad - s_home_offset_rad) / MC_IF_POS_SCALE);
     g_od.velocity_actual = (int32_t)(g_mc_debug.mech_velocity_rad_s / MC_IF_VEL_SCALE);
     g_od.torque_actual   = (int32_t)(g_mc_debug.iq_meas_a           / MC_IF_CUR_SCALE);
     /* statusword + modes_of_operation_display are owned by the E1 arbiter (above). */
@@ -259,7 +263,9 @@ void MC_Framework_Init(void)
             s_cs.offset_a_counts              = cal.current_offset_a_counts;
             s_cs.offset_c_counts              = cal.current_offset_c_counts;
             s_cs.calibrated                   = true;
+            s_home_offset_rad                 = cal.home_offset_rad;
             g_mc_debug.elec_offset_rad        = cal.electrical_offset_rad;
+            g_mc_debug.home_offset_rad        = cal.home_offset_rad;
             g_mc_debug.store_valid            = true;
         }
     }
@@ -563,6 +569,16 @@ void MC_MotionLoop_1kHz(void)
         calib_save();   /* auto-save: written by the slow loop once the drive is off (ADR-010) */
     }
 
+    /* Set mechanical zero (home): capture the current absolute (multi-turn) position as the home
+       reference, so OD position_actual + (D3) position commands are relative to it. Auto-saved. */
+    if (g_mc_inject.request_set_mech_zero)
+    {
+        g_mc_inject.request_set_mech_zero = false;
+        s_home_offset_rad          = s_est.mechanical.position_rad;
+        g_mc_debug.home_offset_rad = s_home_offset_rad;
+        calib_save();
+    }
+
     od_mirror_live();   /* publish live state into the OD store */
 }
 
@@ -578,6 +594,15 @@ void MC_SlowLoop_10_100Hz(void)
     {
         calib_save();
         g_od.store_save_command = 0u;
+    }
+
+    /* OD calibration command (0x2700:1). SET_MECH_ZERO captures the current position as the
+       mechanical home -- the capture runs in the medium loop; persistence follows when drive off. */
+    if (g_od.cal_command == MC_IF_CAL_SET_MECH_ZERO)
+    {
+        g_mc_inject.request_set_mech_zero = true;
+        g_od.cal_status  = MC_IF_CAL_SET_MECH_ZERO;   /* accepted; echoes the last command */
+        g_od.cal_command = MC_IF_CAL_NONE;
     }
 
     /* Persistence: flash writes only when the power stage is off, to avoid disturbing an

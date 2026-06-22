@@ -52,7 +52,8 @@ typedef struct
 
     /* --- Feedback / state estimator (Stage B2) --- */
     uint32_t enc_raw;             /**< Raw 21-bit SSI position [counts]. */
-    float    mech_position_rad;   /**< Continuous (multi-turn) mechanical position [rad]. */
+    float    mech_position_rad;   /**< Continuous (multi-turn) mechanical position [rad], absolute. */
+    float    home_offset_rad;     /**< Mechanical home; OD position_actual = mech_position - home (ADR-022). */
     float    mech_velocity_rad_s; /**< Mechanical velocity (active source) [rad/s]. */
     float    vel_finite_diff;     /**< Finite-difference velocity [rad/s]. */
     float    vel_observer;        /**< Position-tracking observer velocity [rad/s]. */
@@ -99,6 +100,7 @@ typedef struct
     float vbus_v;                /**< Supply/bus voltage used for the duty calc [V]. */
     float current_limit_a;       /**< Over-current trip threshold [A]. */
     bool  request_align_capture; /**< Capture the electrical offset at the held rotor position. */
+    bool  request_set_mech_zero; /**< Capture the current position as the mechanical home (ADR-022). */
     bool  clear_fault;           /**< Clear the latched over-current trip. */
 
     /* --- FOC current loop (Stage D1; gated by inject_enable) --- */
