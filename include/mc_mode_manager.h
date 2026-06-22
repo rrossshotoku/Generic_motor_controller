@@ -9,7 +9,6 @@ typedef enum
     MC_MODE_DISABLED = 0,
     MC_MODE_POSITION_HOLD,
     MC_MODE_PROFILE_POSITION,
-    MC_MODE_JOYSTICK_VELOCITY,
     MC_MODE_PROFILE_VELOCITY,
     MC_MODE_TORQUE_CURRENT,
     MC_MODE_HOMING_CALIBRATION,
@@ -37,6 +36,7 @@ typedef struct
     bool operation_enabled;
     bool motion_active;
     bool target_reached;
+    bool new_setpoint_latched;   /* one-shot: NEW_SETPOINT rising edge this update (D3 trajectory consumes) */
 } MC_DriveStatus_t;
 
 void MC_ModeManager_Init(void);

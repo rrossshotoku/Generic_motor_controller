@@ -26,7 +26,7 @@ SPI connects the network MCU and motor-control MCU. It carries both:
 
 | Value | Name | Direction | Purpose |
 |---:|---|---|---|
-| 0x01 | CYCLIC_CMD | network -> motor | controlword, mode, targets, profile limits |
+| 0x01 | CYCLIC_CMD | network -> motor | controlword, velocity_setpoint, command_counter (v3; mode/targets are SDO-only) |
 | 0x02 | CYCLIC_STATUS | motor -> network | statusword, actuals, errors |
 | 0x10 | OD_READ_REQ | network -> motor | read index/subindex |
 | 0x11 | OD_READ_RESP | motor -> network | read result |

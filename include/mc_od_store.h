@@ -57,6 +57,7 @@ typedef struct
     int8_t   modes_of_operation;         /* 0x6060 RW */
     int8_t   modes_of_operation_display; /* 0x6061 RO (name matches the contract for OD generation) */
     int32_t  target_position;        /* 0x607A RW (scaled) */
+    uint32_t target_position_time_ms;/* 0x607B RW (PROFILE_POSITION move duration, ms; 0 = ASAP) */
     int32_t  position_actual;        /* 0x6064 RO (scaled) */
     uint32_t profile_velocity;       /* 0x6081 RW */
     uint32_t profile_acceleration;   /* 0x6083 RW */

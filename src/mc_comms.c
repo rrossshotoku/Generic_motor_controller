@@ -147,16 +147,17 @@ static uint8_t map_write(uint8_t sub, const uint8_t *data, uint8_t len)
     return MC_IF_OD_ERR_NO_SUB;
 }
 
-/* ===== Cyclic command apply (minimal: enable + velocity/jog). Full mode manager: later. ===== */
+/* ===== Cyclic command apply (v3: streaming-only fields, ADR-021) =====
+   The v3 cyclic command carries only controlword, the live velocity_setpoint, and the dead-man
+   counter. Mode and all other targets (0x6060/0x607A/0x6071/profile params) are SDO-owned now --
+   the host writes them via OD_WRITE_REQ and they persist in the OD, so the cyclic stream no longer
+   clobbers them. velocity_setpoint is the authoritative live demand: it lands in 0x60FF, which the
+   scheduler's velocity loop consumes -- so an SDO write to 0x60FF is informational (overwritten
+   each cyclic frame). */
 static void apply_cyclic(const MC_IfCyclicCommand_t *c)
 {
-    /* Route the cyclic command into the OD; the mode manager (remote mode) acts on it.
-       Decoupled: no dependency on the bring-up harness (ADR-018). */
-    (void)MC_Od_Write(0x6040u, 0u, &c->controlword,           2u, MC_OD_TYPE_U16);
-    (void)MC_Od_Write(0x6060u, 0u, &c->mode_of_operation,     1u, MC_OD_TYPE_I8);
-    (void)MC_Od_Write(0x607Au, 0u, &c->target_position,       4u, MC_OD_TYPE_I32);
-    (void)MC_Od_Write(0x60FFu, 0u, &c->target_velocity,       4u, MC_OD_TYPE_I32);
-    (void)MC_Od_Write(0x6071u, 0u, &c->target_torque_current, 4u, MC_OD_TYPE_I32);
+    (void)MC_Od_Write(0x6040u, 0u, &c->controlword,       2u, MC_OD_TYPE_U16);
+    (void)MC_Od_Write(0x60FFu, 0u, &c->velocity_setpoint, 4u, MC_OD_TYPE_I32);
 
     s_last_cmd_counter = c->command_counter;
     s_cmd_fresh   = true;

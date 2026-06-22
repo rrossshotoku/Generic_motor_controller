@@ -13,12 +13,14 @@
 
 static MC_DriveStatus_t s_status;
 static bool             s_fault_latched;
+static bool             s_prev_new_setpoint;   /* for NEW_SETPOINT rising-edge detection (v3) */
 
 void MC_ModeManager_Init(void)
 {
     memset(&s_status, 0, sizeof(s_status));
     s_status.active_mode = MC_MODE_DISABLED;
     s_fault_latched      = false;
+    s_prev_new_setpoint  = false;
 }
 
 void MC_ModeManager_Update(const MC_DriveCommand_t *cmd, const MC_FaultState_t *faults)
@@ -55,7 +57,6 @@ void MC_ModeManager_Update(const MC_DriveCommand_t *cmd, const MC_FaultState_t *
             {
                 case MC_IF_MODE_TORQUE:            mode = MC_MODE_TORQUE_CURRENT;    break;
                 case MC_IF_MODE_PROFILE_VELOCITY:  mode = MC_MODE_PROFILE_VELOCITY;  break;
-                case MC_IF_MODE_JOYSTICK_VELOCITY: mode = MC_MODE_JOYSTICK_VELOCITY; break;
                 case MC_IF_MODE_PROFILE_POSITION:  mode = MC_MODE_PROFILE_POSITION;  break;
                 default:  /* unknown / unroutable -> stay disabled */
                     mode = MC_MODE_DISABLED;
@@ -69,6 +70,12 @@ void MC_ModeManager_Update(const MC_DriveCommand_t *cmd, const MC_FaultState_t *
             mode = MC_MODE_DISABLED;
         }
     }
+
+    /* NEW_SETPOINT rising edge -> one-shot trigger for the trajectory engine (D3 consumes it to
+       latch the SDO-written setup and start a PROFILE_POSITION move). Velocity/torque modes are
+       continuous and ignore it. Detected every update regardless of mode so the edge is never missed. */
+    s_status.new_setpoint_latched = (cmd->new_setpoint && !s_prev_new_setpoint);
+    s_prev_new_setpoint           = cmd->new_setpoint;
 
     s_status.active_mode       = mode;
     s_status.operation_enabled = enabled;

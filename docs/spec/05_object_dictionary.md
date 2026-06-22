@@ -14,6 +14,13 @@
 > absent (an OD request for it returns `NO_OBJECT`). No motor-side functional change — the version
 > flows through `MC_IF_PROTOCOL_VERSION` (now `2`); deploy is a coordinated v2 cutover (link is
 > down on any version mismatch).
+>
+> **Update, 2026-06-22 (ADR-021, v3)**: protocol bumped to **3** (cyclic command reshaped). New
+> motor-owned entry `0x607B target_position_time_ms` (auto-generated; table 62→63). `0x60FF
+> target_velocity` is now **informational** — the authoritative live velocity demand is the cyclic
+> `velocity_setpoint`, which the motor writes into `0x60FF` each frame (so an SDO write to it is
+> overwritten). The motor's `MC_IF_MODE_JOYSTICK_VELOCITY` and the draft `0x2320:1 joystick_scale`
+> are gone (REQ-0010 — joystick scaling stays CMC-side).
 
 
 ## OD implementation type

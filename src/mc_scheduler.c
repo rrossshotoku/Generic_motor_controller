@@ -476,7 +476,7 @@ void MC_MotionLoop_1kHz(void)
         dc.target_velocity_rad_per_s = (float)g_od.target_velocity * MC_IF_VEL_SCALE;
         dc.target_torque_nm          = 0.0f;
         dc.requested_time_s          = 0.0f;
-        dc.new_setpoint              = false;
+        dc.new_setpoint              = (g_od.controlword & MC_IF_CW_NEW_SETPOINT) != 0u;
         dc.halt                      = false;
         dc.fault_reset               = (g_od.controlword & MC_IF_CW_FAULT_RESET) != 0u;
 
@@ -510,11 +510,10 @@ void MC_MotionLoop_1kHz(void)
                 s_eff_iq_cmd      = (float)g_od.target_torque * MC_IF_CUR_SCALE;
                 s_eff_id_cmd      = 0.0f;
             }
-            else if ((ds.active_mode == MC_MODE_PROFILE_VELOCITY) ||
-                     (ds.active_mode == MC_MODE_JOYSTICK_VELOCITY))
+            else if (ds.active_mode == MC_MODE_PROFILE_VELOCITY)
             {
                 s_eff_torque_mode = false;
-                s_eff_vel_cmd     = dc.target_velocity_rad_per_s;
+                s_eff_vel_cmd     = dc.target_velocity_rad_per_s;   /* = cyclic velocity_setpoint (v3) */
             }
             else
             {
