@@ -7,6 +7,13 @@
 > outside the OD table is the **telemetry map `0x2A00`** (REQ-0004, deferred — handled in
 > `mc_comms` for now). Authoritative map: `../../../Lightweight_CMC/Interface/mc_if_od.h`
 > (`MC_IF_OD_OBJECTS`). Request log: `../../../Lightweight_CMC/Interface/REQUESTS.md`.
+>
+> **Update, 2026-06-22 (ADR-019, CMC REQ-0008)**: shared contract bumped to **v2** — every
+> canonical entry now carries an **owner** column and a new CMC-owned `0x3xxx` axis_manager range
+> was added. The motor table holds only `MC_IF_OWNER_MOTOR` entries; `0x3xxx` is intentionally
+> absent (an OD request for it returns `NO_OBJECT`). No motor-side functional change — the version
+> flows through `MC_IF_PROTOCOL_VERSION` (now `2`); deploy is a coordinated v2 cutover (link is
+> down on any version mismatch).
 
 
 ## OD implementation type
@@ -100,11 +107,14 @@ Each object entry shall define:
 ## Authoritative object map (ADR-013)
 
 The concrete OD object list is the `MC_IF_OD_OBJECTS(X)` X-macro in the shared interface package
-`../Lightweight_CMC/Interface/mc_if_od.h` (both MCUs generate their tables from it). CiA-402
-standard objects (0x1xxx/0x6xxx) are scaled integers (factors in that header); manufacturer
-objects (0x2xxx: gains, telemetry, calibration, persistence, test-injection) are **float32 SI**.
-The motor MCU's `mc_od` table is generated from that list, mapping each entry to a live
-variable / shadow config / callback.
+`../Lightweight_CMC/Interface/mc_if_od.h`. Each entry carries an **owner** (`MC_IF_OWNER_MOTOR` /
+`MC_IF_OWNER_CMC`, Interface v2): the motor MCU owns the CiA-402 `0x1xxx`/`0x6xxx` and manufacturer
+`0x2xxx` entries; the network MCU owns the `0x3xxx` axis_manager range. CiA-402 standard objects
+(0x1xxx/0x6xxx) are scaled integers (factors in that header); manufacturer objects (0x2xxx: gains,
+telemetry, calibration, persistence, test-injection) are **float32 SI**. The motor MCU's `mc_od`
+table is a **hand-maintained subset** of the motor-owned entries — **not** generated from the
+X-macro, so the owner column is not enforced at compile time and the two can drift (see ADR-019);
+each entry maps to a live variable / shadow config / callback.
 
 ### Implementation status (ADR-015)
 

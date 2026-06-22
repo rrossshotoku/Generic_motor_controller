@@ -10,6 +10,12 @@
  *  (../Lightweight_CMC/Interface/mc_if_od.h, MC_IF_OD_OBJECTS) bound to @ref g_od; keep the two
  *  in sync (and log any contract change per the Interface CHANGELOG). The CiA-402 standard
  *  objects (0x6xxx) and the 0x2A00 telemetry map are added with the SPI transport + mode manager.
+ *
+ *  Interface v2 (ADR-019): every canonical entry carries an owner column. This table holds only
+ *  MC_IF_OWNER_MOTOR entries; the CMC-owned axis_manager range (0x3xxx) is intentionally absent
+ *  (handled by the network MCU), so an OD request for it resolves to NO_OBJECT via od_notfound().
+ *  NOTE: because this table is hand-written and NOT generated from MC_IF_OD_OBJECTS(X), the owner
+ *  column is not enforced here -- the canonical map and this table can drift silently (see ADR-019).
  */
 
 MC_OdStore_t g_od;
