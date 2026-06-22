@@ -92,14 +92,17 @@ reset keeps the slave resilient but the master must be disciplined.
 
 Two further on-target findings, fixed together:
 
-1. **Re-arm raced the control loop (re-arm fails in ~600 ms bursts).** The SPI2 DMA IRQ sat at
+1. **Re-arm raced the control loop (re-arm fails in ~600 ms bursts).** The SPI2 DMA IRQ sits at
    priority 3, *below* the 1 kHz medium loop (TIM7 = priority 2). When the beat between the
    master's ~1 kHz frame rate and TIM7 drifted them into phase, the medium loop (blocking SSI
    read + control cascade) preempted and delayed the per-transaction re-arm, which then missed
-   the master's next frame — a burst of fails once per beat period (~600 ms). Fix: raise
-   `DMA1_Channel5/6` (SPI2 RX/TX) + `SPI2_IRQn` to **priority 1** in `main.c` — above the medium
-   loop, still below the fast loop (priority 0), so the re-arm runs promptly and FOC timing is
-   untouched (handler is bounded, ~10-20 us).
+   the master's next frame — a burst of fails once per beat period (~600 ms). Raising the SPI2
+   DMA/IRQ to priority 1 (above the medium loop) was tried and **reverted**: putting a comms ISR
+   above the velocity loop inverts the proper hierarchy (control must always preempt comms) and
+   adds bounded but real jitter (~25 µs, CRC-dominated) to the loop. **Resolution:** keep SPI2 at
+   priority 3 and rely on the pipelined double-buffer (item 2) to make the re-arm prompt — the
+   time-critical work is now a ~1-2 µs swap+arm, which fits the master's inter-frame gap even when
+   the medium loop delays the callback. (Decision: control-loop primacy over comms; 2026-06-22.)
 
 2. **Re-arm latency scaled with handler work (fails + resets when the telemetry map filled).**
    With the original single buffer the re-arm happened *after* `MC_Comms_HandleTransaction`
@@ -120,11 +123,15 @@ no `MC_IF_PROTOCOL_VERSION` bump or `Interface/CHANGELOG.md` entry is required. 
 the network-MCU author's awareness; no action needed their side. Telemetry is likewise one frame
 (~1 ms) older — negligible for 1 kHz graphing/tuning.
 
-**Master-side recommendation (logged for the network MCU, not a contract change):** the slave is
-now burst-tolerant, but the master's tick catch-up (`s_last_tick_ms += CYCLE_PERIOD_MS` after a
-delay) still emits frames with no gap, which is fragile in general. Prefer clamping the catch-up
-(`s_last_tick_ms = time_ms()` after a long stall, or send at most one frame per main-loop pass) so
-the 1 ms inter-frame cadence is preserved even when the main loop hitches.
+**Master-side item (network MCU — tracked in the Lightweight_CMC repo, not a contract change):**
+with the SPI2 priority reverted, the pipelined double-buffer absorbs *small* inter-frame gaps, but
+a true zero-gap burst from the master can still cause occasional re-arm fails (the callback may be
+delayed by the medium loop). The root cause is the master's tick catch-up
+(`cia402_tick`: `s_last_tick_ms += CYCLE_PERIOD_MS` after a stall) emitting frames with no gap —
+fragile in general. The proper fix is master-side: clamp the catch-up (`s_last_tick_ms = time_ms()`
+after a long stall, or send at most one frame per main-loop pass) so the 1 ms cadence survives a
+main-loop hitch (e.g. a blocking W6100 send). Being addressed separately by the network-MCU author;
+no motor-side action.
 
 `g_spi_slave` gains `last_rearm_hal` (HAL status of the last re-arm: 0=OK, 1=ERR, 2=BUSY,
 3=TIMEOUT) to diagnose any residual failures from the watch window.

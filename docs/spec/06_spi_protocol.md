@@ -112,9 +112,10 @@ project's `mc_spi_protocol.{h,c}` is to be reconciled to include the shared head
 - **F2b (ADR-016):** `mc_spi_slave_stm32g474.c` — SPI2 slave (8-bit, mode 0, hardware NSS),
   64-byte full-duplex DMA. **Pipelined double-buffer**: on `HAL_SPI_TxRxCpltCallback` it re-arms
   immediately with the pre-prepared frame, then runs the handler to fill the next buffer — so
-  re-arm latency is independent of handler work and the slave tolerates back-to-back frames (OD
+  re-arm latency is independent of handler work and the slave tolerates small inter-frame gaps (OD
   response lands two transactions after its request; seq-correlated, transparent to the master).
-  The SPI2 DMA/IRQ run at **priority 1** (above the 1 kHz medium loop, below the 20 kHz fast loop)
-  so the re-arm is never delayed by the control cascade. `HAL_SPI_ErrorCallback` runs the robust
-  reset. Armed from `main.c`. On-target bring-up: verify NSS resync, re-arm timing, and error
-  recovery with the network MCU master.
+  The SPI2 DMA/IRQ stay at **priority 3** — below the 1 kHz medium loop (prio 2) and 20 kHz fast
+  loop (prio 0), so control always preempts comms; the pipelined re-arm keeps latency low without
+  inverting that hierarchy. `HAL_SPI_ErrorCallback` runs the robust reset. Armed from `main.c`.
+  On-target bring-up: verify NSS resync, re-arm timing, and error recovery with the network MCU
+  master (true zero-gap master bursts are a master-side discipline item — see ADR-016).
