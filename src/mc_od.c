@@ -107,12 +107,14 @@ void MC_OdStore_LoadDefaults(void)
 
     /* Position controller (D3) */
     g_od.pos_kp = 5.0f;
+    g_od.velocity_ff_gain = 1.0f;   /* 0x2200:4 -- full velocity feedforward by default (ADR-031) */
 
     /* Velocity controller (proven gains, torque form: 150*Kt, 1000*Kt) */
     g_od.vel_kp = 150.0f * 0.231f;
     g_od.vel_ki = 1000.0f * 0.231f;
     g_od.vel_kd = 0.0f;
     g_od.vel_current_limit_a = 2.5f;
+    g_od.vel_load_factor = 1.0f;   /* 0x2300:5 -- no load scaling by default (REQ-0014/ADR-034) */
 
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;

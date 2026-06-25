@@ -35,4 +35,9 @@ void MC_StateEstimator_Update(MC_StateEstimator_t *est,
                               const MC_StateEstimatorConfig_t *cfg,
                               const MC_PositionSensorSample_t *sample);
 
+/** Re-anchor the multi-turn accumulator to @p continuous_rad (e.g. the startup nearest-turn seed,
+ *  ADR-037). Keeps @c prev_single_rad so the next delta stays small; the observer follows so there is
+ *  no phantom position error. */
+void MC_StateEstimator_SeedContinuous(MC_StateEstimator_t *est, float continuous_rad);
+
 #endif

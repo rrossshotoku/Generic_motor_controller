@@ -16,9 +16,11 @@
 typedef struct
 {
     /* --- Gains / config (RW) --- */
-    float    pos_kp, pos_ki, pos_kd;                 /* 0x2200 */
+    float    pos_kp, pos_ki, pos_kd;                 /* 0x2200:1-3 */
+    float    velocity_ff_gain;                       /* 0x2200:4 -- position-cascade velocity FF ratio (ADR-031) */
     float    vel_kp, vel_ki, vel_kd;                 /* 0x2300 */
     float    vel_current_limit_a;                    /* 0x2300:4 */
+    float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400 */
     float    est_electrical_offset_rad;              /* 0x2500:1 */
     float    est_velocity_filter_hz;                 /* 0x2500:2 */
@@ -31,6 +33,17 @@ typedef struct
     /* --- Commands (RW; placeholders until wired to mode manager / inject path) --- */
     uint8_t  inject_enable, inject_target, inject_step_trigger; /* 0x2900 */
     float    inject_step_amplitude;
+    /* --- 0x2910 loop-tuning test-signal overlay (ADR-030) --- */
+    uint8_t  test_mode;              /* 0x2910:1 (MC_IF_TEST_MODE_*) */
+    float    test_amplitude;         /* 0x2910:2 (rad/s or rad, per test_mode) */
+    float    test_rate;              /* 0x2910:3 (rad/s^2 or rad/s; 0 = step) */
+    float    test_dwell_s;           /* 0x2910:4 */
+    uint8_t  test_continuous;        /* 0x2910:5 (0 one-shot / 1 alternating) */
+    uint16_t test_trigger;           /* 0x2910:6 (write 1 to fire) */
+    uint8_t  test_active;            /* 0x2910:7 RO */
+    float    test_signal;            /* 0x2910:8 RO PDO -- raw signal-generator output (graphable) */
+    float    test_pause_s;           /* 0x2910:9 -- inter-pulse pause [s] (continuous mode) */
+    float    test_max_accel;         /* 0x2910:10 -- position-tuning accel limit [rad/s^2]; 0 = off (ADR-032) */
     uint16_t cal_command;                            /* 0x2700:1 */
     float    cal_align_current_a;                     /* 0x2700:3 electrical-align current [A] (PERSIST) */
     uint16_t cal_align_hold_ms;                       /* 0x2700:4 electrical-align hold [ms] (PERSIST) */
@@ -39,9 +52,11 @@ typedef struct
     /* --- Telemetry (RO; mirrored from the live control state) --- */
     float    tlm_vel_demand_rad_s, tlm_vel_actual_rad_s, tlm_vel_iq_cmd_a;   /* 0x2310 */
     float    tlm_id_meas_a, tlm_iq_meas_a, tlm_vd_v, tlm_vq_v, tlm_electrical_angle_rad; /* 0x2410 */
-    float    tlm_mech_position_rad, tlm_mech_velocity_rad_s;                 /* 0x2510 */
+    float    tlm_mech_position_rad, tlm_mech_velocity_rad_s;                 /* 0x2510:1,2 */
+    float    tlm_pos_demand_rad;                                            /* 0x2510:3 PDO -- absolute (home-relative) position demand */
     float    tlm_bus_voltage_v;                                              /* 0x2600:3 */
     uint16_t cal_status, store_status;
+    uint16_t cal_done_flags;         /* 0x2700:5 RO -- calibration-completeness bitfield (ADR-026) */
 
     /* --- REQ-0003 manufacturer additions --- */
     float    motor_resistance_ohm;   /* 0x2000:3 */

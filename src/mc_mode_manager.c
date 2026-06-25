@@ -49,20 +49,30 @@ void MC_ModeManager_Update(const MC_DriveCommand_t *cmd, const MC_FaultState_t *
         {
             mode = MC_MODE_QUICK_STOP;
         }
-        else if (enable_req && !halt)
+        else if (enable_req)
         {
             enabled = true;
             sw |= MC_IF_SW_ENABLED;
-            switch (cmd->mode_of_operation)
+            if (halt)
             {
-                case MC_IF_MODE_TORQUE:            mode = MC_MODE_TORQUE_CURRENT;    break;
-                case MC_IF_MODE_PROFILE_VELOCITY:  mode = MC_MODE_PROFILE_VELOCITY;  break;
-                case MC_IF_MODE_PROFILE_POSITION:  mode = MC_MODE_PROFILE_POSITION;  break;
-                default:  /* unknown / unroutable -> stay disabled */
-                    mode = MC_MODE_DISABLED;
-                    enabled = false;
-                    sw &= (uint16_t)~MC_IF_SW_ENABLED;
-                    break;
+                /* HALT (CW_HALT): controlled hold -- stay ENABLED and hold position. Routed to the
+                   position-hold cascade by the scheduler (ADR-035). Holds regardless of the underlying
+                   mode_of_operation; resume by clearing HALT. */
+                mode = MC_MODE_POSITION_HOLD;
+            }
+            else
+            {
+                switch (cmd->mode_of_operation)
+                {
+                    case MC_IF_MODE_TORQUE:            mode = MC_MODE_TORQUE_CURRENT;    break;
+                    case MC_IF_MODE_PROFILE_VELOCITY:  mode = MC_MODE_PROFILE_VELOCITY;  break;
+                    case MC_IF_MODE_PROFILE_POSITION:  mode = MC_MODE_PROFILE_POSITION;  break;
+                    default:  /* unknown / unroutable -> stay disabled */
+                        mode = MC_MODE_DISABLED;
+                        enabled = false;
+                        sw &= (uint16_t)~MC_IF_SW_ENABLED;
+                        break;
+                }
             }
         }
         else

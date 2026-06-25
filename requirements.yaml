@@ -13,11 +13,13 @@ architecture:
   inter_mcu:
     transport: SPI
     access: [object_read_write, cyclic_process_data]
+    protocol_version: 4                                       # ADR-033/REQ-0013 (3->4; fixed cyclic header gained position_actual + movement_status)
   initial_motor_backend: three_shunt_bldc_pmsm_foc
   future_motor_backend: brushed_dc_hbridge
 feedback:
   initial_position_feedback: configurable_ssi_absolute_encoder
   future_position_feedback: quadrature_encoder
+  startup_position: nearest_turn_to_home                    # ADR-037/038 (single-turn encoder: anchor continuous = home + wrap_pi(single-home); re-anchored every cycle while disabled (ADR-038, self-correcting vs the cold-boot home-load race), locked on first enable for multi-turn tracking; no phantom turn near the 0/2pi seam)
   velocity_estimate_default: position_tracking_observer     # ADR-003
   velocity_estimate_fallback: finite_difference_lowpass     # ADR-003
   velocity_estimate_runtime_selectable: true                # ADR-003
@@ -37,12 +39,30 @@ control:
   position_controller: configurable_pid_default_p
   velocity_controller: configurable_pid_default_pi
   current_controller: dual_pi_id_iq
+  position_execution: realized_d3                          # ADR-028 (trajectory->position->velocity cascade)
+  velocity_feedforward_gain: tunable                       # ADR-031 (0x2200:4, default 1.0; FF ratio for position cascade)
+  tuning_accel_limit: position_trapezoidal                 # ADR-032 (0x2910:10 test_max_accel; accel-limited position-tuning profile)
+  velocity_load_factor: tunable                            # ADR-034/REQ-0014 (0x2300:5, default 1.0, clamp 0.3..2.0; operator load multiplier on vel kp/ki)
+command_surface:                                           # PC commands via the CMC axis_manager (0x30xx); INTERFACE_SPEC §5b
+  owner: cmc_axis_manager
+  modes_working: [off, joystick, profile_velocity, profile_position, hold]   # position exec = ADR-028
+  current_command: requested_cmc                           # axis_manager torque mode: Interface/REQUESTS.md REQ-0012 (ADR-027)
+loop_tuning:                                               # ADR-030 (motor-side test-signal overlay)
+  owner: motor                                             # motor-owned test_mode (0x2910), not a CiA-402 mode
+  modes: [off, velocity_tuning, position_tuning]           # overlay on the enabled operational mode
+  generator: mc_signal_gen                                 # shared pure module: ramp/pulse/step/continuous (rate=0 -> step)
+  injection: {velocity_tuning: velocity_demand, position_tuning: position_demand_bypass_trajectory}
 faults:
   severity_based: true
   matrix_required: true
 persistence:
   simple_flash_backed_store: true
   fields: [version, crc, defaults, factory_reset]
+calibration:                                                 # ADR-026
+  od_triggered_commands: [electrical_alignment, set_mechanical_zero, current_offset]  # 0x2700:1 = 1 / 3 / 2
+  completeness_reporting: od_bitfield                        # 0x2700:5 cal_done_flags (RO): electrical|mech_zero|current_offset
+  completeness_derived_no_store_version_bump: true           # derived from existing state; saved gains survive
+  current_offset_requires_power_stage_off: true              # safety gate
 tests:
   level: basic_module_tests
 

@@ -21,6 +21,11 @@ static bool     s_cmd_fresh;
 static bool     s_link_active;     /* true once a cyclic command has ever been received */
 static uint8_t  s_stall_ticks;
 
+/* Movement status (MC_IF_MOVE_*) pushed by the scheduler -> cyclic status header (REQ-0013/ADR-033). */
+static uint16_t s_movement_status;
+
+void MC_Comms_SetMovementStatus(uint16_t status) { s_movement_status = status; }
+
 /* ===== CRC16/Modbus (poly 0xA001, init 0xFFFF) ===== */
 static uint16_t crc16(const uint8_t *d, uint32_t n)
 {
@@ -69,6 +74,10 @@ static uint16_t build_telemetry(uint8_t *payload)
     hdr.error_code     = ec;
     hdr.map_version    = s_map_version;
     hdr.status_counter = s_last_cmd_counter;
+    int32_t pa = 0;
+    (void)MC_Od_ReadRaw(0x6064u, 0u, &pa, sizeof pa, &t, &n);   /* position_actual (scaled) -- v4 header */
+    hdr.position_actual_scaled = pa;
+    hdr.movement_status        = s_movement_status;             /* pushed by the scheduler (ADR-033) */
 
     uint8_t *blob = payload + MC_IF_STATUS_HEADER_SIZE;
     uint8_t nbytes = 0u;

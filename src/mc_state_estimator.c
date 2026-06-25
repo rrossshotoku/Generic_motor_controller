@@ -111,3 +111,10 @@ void MC_StateEstimator_Update(MC_StateEstimator_t *est,
     est->electrical.electrical_velocity_rad_per_s = velocity * cfg->pole_pairs;
     est->electrical.electrical_valid              = sample->valid;
 }
+
+void MC_StateEstimator_SeedContinuous(MC_StateEstimator_t *est, float continuous_rad)
+{
+    est->continuous_position_rad = continuous_rad;
+    est->obs_theta               = continuous_rad;   /* observer follows -> no phantom position error */
+    est->mechanical.position_rad = continuous_rad;
+}

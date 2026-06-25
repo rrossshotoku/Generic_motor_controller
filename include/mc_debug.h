@@ -24,6 +24,7 @@ typedef struct
     uint32_t fast_count;           /**< 20 kHz fast-loop iteration counter. */
     uint32_t medium_count;         /**< 1 kHz medium-loop iteration counter. */
     uint32_t slow_count;           /**< 100 Hz slow-loop iteration counter. */
+    uint32_t fw_build;             /**< Firmware build/version marker (ADR-038); confirms the flashed image. */
 
     uint32_t fast_cycles;          /**< Last fast-loop body duration [CPU cycles]. */
     uint32_t fast_cycles_max;      /**< Worst-case fast-loop body duration [CPU cycles]. */
@@ -78,6 +79,13 @@ typedef struct
     float    vel_torque_cmd_nm;   /**< Velocity-loop torque request [Nm]. */
     float    vel_iq_cmd_a;        /**< iq command from the velocity loop [A]. */
 
+    /* --- Position loop (Stage D3) --- */
+    float    pos_demand_rad;      /**< Trajectory position demand [rad], home-relative. */
+    float    pos_actual_rad;      /**< Position feedback [rad], home-relative. */
+    float    pos_error_rad;       /**< Position error (demand - actual) [rad]. */
+    bool     target_reached;      /**< Trajectory complete + within the target window. */
+    uint16_t movement_status;     /**< MC_IF_MOVE_* bits published to the cyclic header (REQ-0013/ADR-033). */
+
     /* --- Persistence (flash param store) --- */
     bool     store_valid;         /**< A valid calibration record is loaded/stored. */
     bool     store_save_pending;  /**< A save is latched, awaiting the slow loop (drive off). */
@@ -89,6 +97,7 @@ typedef struct
 {
     bool  inject_enable;        /**< Master gate: when false, inject fields have no effect. */
     bool  request_offset_cal;   /**< Bench: average N samples at zero current to set ADC offsets (PWM off). */
+    bool  request_test_fire;    /**< Fire the loop-tuning signal generator (0x2910 trigger, ADR-030). */
     bool  use_finite_diff_velocity; /**< Live: true = finite-diff velocity; false = observer (default). */
     float obs_kp;               /**< Live observer proportional gain (not gated; no drive). */
     float obs_ki;               /**< Live observer integral gain. */
@@ -98,7 +107,9 @@ typedef struct
     float align_voltage_v;       /**< Commanded d-axis voltage Vd [V] (clamped <= 3 V). */
     float align_angle_rad;       /**< Commanded electrical angle [rad] (0 aligns d-axis to phase A). */
     float vbus_v;                /**< Supply/bus voltage used for the duty calc [V]. */
-    float current_limit_a;       /**< Over-current trip threshold [A]. */
+    float current_limit_a;       /**< Over-current trip threshold [A]. Applied from OD current_trip_a
+                                      (0x2600:2) each slow tick (od_apply_gains), so watch-window writes
+                                      here are transient -- set the trip via the OD / GUI (ADR-029). */
     bool  request_align_capture; /**< Capture the electrical offset at the held rotor position. */
     bool  request_set_mech_zero; /**< Capture the current position as the mechanical home (ADR-022). */
     bool  request_align_routine; /**< Run the current-regulated electrical-alignment routine (ADR-024). */

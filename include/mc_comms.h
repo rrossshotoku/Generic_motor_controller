@@ -46,4 +46,10 @@ void MC_Comms_HandleTransaction(const uint8_t *rx, uint8_t *tx_next);
  */
 bool MC_Comms_CommandTimedOut(void);
 
+/**
+ * @brief Set the movement_status bitfield (MC_IF_MOVE_*) published in the cyclic status header.
+ *        Called by the scheduler each medium tick (REQ-0013 / ADR-033).
+ */
+void MC_Comms_SetMovementStatus(uint16_t status);
+
 #endif /* MC_COMMS_H */

@@ -59,6 +59,13 @@ The estimator must handle wraparound and timestamping. Velocity may be finite di
 - **Estimator** (`mc_state_estimator.c`): multi-turn continuous position via wrap detection;
   mechanical velocity by finite-difference + first-order low-pass (~20 Hz); electrical angle
   `wrap(single * pole_pairs + offset)`. Acceleration not yet estimated.
+- **Startup position anchor** (ADR-037/038): a single-turn absolute encoder has no turn count across a
+  power cycle, so on boot the continuous position is anchored to the home-relative reading wrapped to the
+  nearest turn: `continuous = home_offset + wrap_pi(single - home_offset)` (axis assumed within ±½ turn of
+  home). To survive a cold boot where the persisted `home_offset` loads after the first encoder sample, the
+  anchor is **re-applied every medium cycle while the drive has never been enabled** (idempotent once
+  correct, self-correcting if home loads late), then **locked on the first enable** so motion tracks true
+  multi-turn. Re-anchoring only ever shifts by whole turns, so velocity/observer are undisturbed.
 - **Velocity observer** (ADR-003 default): position-tracking PI + velocity damping,
   double-integrated (kp=40000, ki=0, kv=200 -> omega_n=200, zeta=0.5; output LPF alpha 0.3).
   Selectable against finite-difference; gains live-tunable from the watch window.

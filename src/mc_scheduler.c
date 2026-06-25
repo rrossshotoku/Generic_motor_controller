@@ -12,11 +12,15 @@
 #include "mc_calib_data.h"
 #include "mc_velocity_controller.h"
 #include "mc_current_request.h"
+#include "mc_trajectory.h"
+#include "mc_position_controller.h"
+#include "mc_signal_gen.h"
 #include "mc_od.h"
 #include "mc_od_store.h"
 #include "mc_comms.h"
 #include "mc_mode_manager.h"
 #include "mc_if_od.h"      /* MC_IF_*_SCALE, status/mode bits, persistence magics (shared contract) */
+#include "mc_if_protocol.h" /* MC_IF_MOVE_* cyclic-header movement_status bits (REQ-0013/ADR-033) */
 #include <math.h>
 #include <string.h>
 
@@ -50,6 +54,8 @@ static MC_PositionSensorSample_t s_pos_sample;
 /* Mechanical home (multi-turn): the OD position_actual and (later, D3) position commands are
    relative to this captured absolute position. Set via the SET_MECH_ZERO cal command; persisted. */
 static float s_home_offset_rad;
+static bool  s_pos_locked;   /* false until the drive is first enabled; while false the startup anchor
+                                re-derives continuous from the absolute encoder each cycle (ADR-037/038) */
 
 /* Stage C2: open-loop drive state. */
 #define MC_C2_VD_MAX 3.0f   /* hard clamp on commanded d-axis voltage [V] */
@@ -78,9 +84,27 @@ static MC_TorqueModelConfig_t        s_torque_cfg;
 static volatile float                s_iq_cmd_published;  /* velocity-loop iq, medium->fast (atomic) */
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
 
+/* Stage D3: trajectory + position loop (runs in the medium loop; feeds the velocity cascade). */
+static MC_TrajectoryPlanner_t        s_traj;
+static MC_PositionController_t       s_pos_ctl;
+static MC_PositionControllerConfig_t s_pos_cfg;
+static bool                          s_eff_position_mode; /* PROFILE_POSITION active (medium-loop arbiter) */
+static bool                          s_pos_on;            /* position loop active (for entry reset) */
+static float                         s_accel_ff_rad_s2;   /* trajectory accel feedforward -> torque request */
+static float                         s_vel_ff_gain;       /* velocity FF ratio in the position cascade (0x2200:4, ADR-031) */
+static float                         s_pos_hold_rad;      /* held position when in position mode with no active plan */
+
+/* Loop-tuning test-signal overlay (ADR-030): an on-motor generator drives the selected loop's reference. */
+static MC_SignalGen_t                s_sig_gen;
+static uint8_t                       s_sig_loop;           /* latched target loop while active (MC_IF_TEST_MODE_*) */
+static float                         s_sig_value;          /* generator output this medium tick */
+static float                         s_pos_tune_entry_rad; /* position captured when position-tuning fires (home-relative) */
+#define MC_POS_TARGET_WINDOW_RAD (0.01f)                  /* |error| under this + trajectory complete -> target reached */
+
 /* E1: effective drive command (arbitrated commissioning-vs-remote in the medium loop, consumed
    by the fast/medium loops). Plain scalars, single-writer (medium) / reader (fast) — atomic. */
 static volatile bool  s_eff_drive;        /* run the closed FOC current loop */
+static volatile bool  s_eff_halt;         /* HALT: hold current position, stay enabled (ADR-035) */
 static volatile bool  s_eff_torque_mode;  /* true = direct iq; false = velocity loop */
 static volatile float s_eff_iq_cmd;       /* iq command in torque mode [A] */
 static volatile float s_eff_id_cmd;       /* id command [A] */
@@ -96,8 +120,19 @@ static void params_save(void)
     MC_Params_t p;
     memset(&p, 0, sizeof p);
     p.calib.electrical_offset_rad      = s_est_cfg.electrical_offset_rad;
-    p.calib.current_offset_a_counts    = s_cs.offset_a_counts;
-    p.calib.current_offset_c_counts    = s_cs.offset_c_counts;
+    /* Current offsets: persist the measured values only if a current-offset calibration has run;
+       otherwise write a 0 "not measured" sentinel so a restore can't report current-offset
+       calibration as done when it merely reloaded board-nominal offsets (ADR-026). */
+    if (s_cs.calibrated)
+    {
+        p.calib.current_offset_a_counts = s_cs.offset_a_counts;
+        p.calib.current_offset_c_counts = s_cs.offset_c_counts;
+    }
+    else
+    {
+        p.calib.current_offset_a_counts = 0.0f;
+        p.calib.current_offset_c_counts = 0.0f;
+    }
     p.calib.mechanical_zero_offset_rad = s_enc_cfg.mechanical_zero_offset_rad;
     p.calib.phase_order                = 1;     /* phase-order detection is Phase E */
     p.calib.home_offset_rad            = s_home_offset_rad;
@@ -113,8 +148,14 @@ static void od_apply_gains(void)
     const float kt   = g_od.motor_kt_nm_per_a;
     const float tlim = g_od.vel_current_limit_a * kt;
 
-    s_vel_cfg.pid.kp = g_od.vel_kp;
-    s_vel_cfg.pid.ki = g_od.vel_ki;
+    {
+        /* vel_load_factor (0x2300:5, REQ-0014/ADR-034): operator load multiplier on the velocity-loop
+           gains, clamped to [0.3, 2.0] so a stray/zero write can't kill or blow up the loop. */
+        const float lf = (g_od.vel_load_factor < 0.3f) ? 0.3f
+                       : (g_od.vel_load_factor > 2.0f) ? 2.0f : g_od.vel_load_factor;
+        s_vel_cfg.pid.kp = g_od.vel_kp * lf;
+        s_vel_cfg.pid.ki = g_od.vel_ki * lf;
+    }
     s_vel_cfg.pid.kd = g_od.vel_kd;
     s_vel_cfg.pid.output_min     = -tlim;  s_vel_cfg.pid.output_max     = tlim;
     s_vel_cfg.pid.integrator_min = -tlim;  s_vel_cfg.pid.integrator_max = tlim;
@@ -122,6 +163,24 @@ static void od_apply_gains(void)
     s_torque_cfg.current_limit_a        = g_od.vel_current_limit_a;
     s_torque_cfg.torque_limit_nm        = tlim;
     s_torque_cfg.torque_constant_nm_per_a = kt;
+
+    /* Over-current trip threshold (measured |phase current|, fast loop): driven by the OD entry
+       current_trip_a (0x2600:2) -- GUI-settable + PERSIST. Clamp to a small positive minimum so a
+       stray 0 / negative can't latch the trip permanently and lock the drive out. (ADR-029) */
+    g_mc_inject.current_limit_a = (g_od.current_trip_a > 0.1f) ? g_od.current_trip_a : 0.1f;
+
+    /* Position loop (D3, ADR-028): P-default gains (0x2200); velocity correction capped at the
+       profile velocity (0x6081), falling back to 10 rad/s if unset. */
+    s_pos_cfg.pid.kp = g_od.pos_kp;
+    s_pos_cfg.pid.ki = g_od.pos_ki;
+    s_pos_cfg.pid.kd = g_od.pos_kd;
+    s_vel_ff_gain    = (g_od.velocity_ff_gain >= 0.0f) ? g_od.velocity_ff_gain : 0.0f;  /* 0x2200:4 (ADR-031) */
+    {
+        const float vlim = (float)g_od.profile_velocity * MC_IF_VEL_SCALE;
+        s_pos_cfg.velocity_correction_limit_rad_per_s = (vlim > 0.1f) ? vlim : 10.0f;
+        s_pos_cfg.pid.output_min = -s_pos_cfg.velocity_correction_limit_rad_per_s;
+        s_pos_cfg.pid.output_max =  s_pos_cfg.velocity_correction_limit_rad_per_s;
+    }
 
     s_foc_cfg.id_pi.kp = g_od.foc_id_kp;  s_foc_cfg.id_pi.ki = g_od.foc_id_ki;
     s_foc_cfg.iq_pi.kp = g_od.foc_iq_kp;  s_foc_cfg.iq_pi.ki = g_od.foc_iq_ki;
@@ -146,6 +205,7 @@ static void od_mirror_live(void)
     g_od.tlm_electrical_angle_rad = g_mc_debug.elec_angle_rad;
     g_od.tlm_mech_position_rad    = g_mc_debug.mech_position_rad;
     g_od.tlm_mech_velocity_rad_s  = g_mc_debug.mech_velocity_rad_s;
+    g_od.tlm_pos_demand_rad       = g_mc_debug.pos_demand_rad;   /* abs position demand (0x2510:3 PDO) -- graph vs 0x6064 */
     g_od.tlm_bus_voltage_v        = g_mc_inject.vbus_v;   /* no Vbus sensor yet */
 
     g_od.est_electrical_offset_rad = s_est_cfg.electrical_offset_rad;
@@ -153,7 +213,9 @@ static void od_mirror_live(void)
     g_od.est_obs_ki = g_mc_inject.obs_ki;
     g_od.est_obs_kv = g_mc_inject.obs_kv;
     g_od.est_use_observer = g_mc_inject.use_finite_diff_velocity ? 0u : 1u;
-    g_od.current_trip_a   = g_mc_inject.current_limit_a;
+    /* current_trip_a (0x2600:2) is OD-sourced now -- applied to the live trip in od_apply_gains.
+       Do NOT mirror the live value back here: it would clobber a GUI/OD write every cycle (the
+       original "can't set the trip from the GUI" bug). (ADR-029) */
 
     /* CiA-402 standard objects (REQ-0001): RO actuals mirrored (scaled to wire units),
        status/error derived. RW objects (controlword/modes/targets) are stored and consumed
@@ -161,18 +223,46 @@ static void od_mirror_live(void)
     g_od.position_actual = (int32_t)((g_mc_debug.mech_position_rad - s_home_offset_rad) / MC_IF_POS_SCALE);
     g_od.velocity_actual = (int32_t)(g_mc_debug.mech_velocity_rad_s / MC_IF_VEL_SCALE);
     g_od.torque_actual   = (int32_t)(g_mc_debug.iq_meas_a           / MC_IF_CUR_SCALE);
+
+    /* movement_status (REQ-0013/ADR-033) -> pushed to the fixed cyclic header. MOVING = enabled and the
+       axis is commanded or measured to be turning; ON_TARGET = position-loop target reached; AT_LIMIT_LO/HI
+       reserved 0 (no motor soft limits yet). */
+    {
+        const float vdem = s_eff_vel_cmd;
+        const float vact = g_mc_debug.mech_velocity_rad_s;
+        uint16_t    ms   = 0u;
+        if (s_eff_drive && ((vdem > 0.01f) || (vdem < -0.01f) || (vact > 0.01f) || (vact < -0.01f)))
+        {
+            ms |= MC_IF_MOVE_MOVING;
+        }
+        if (g_mc_debug.target_reached) { ms |= MC_IF_MOVE_ON_TARGET; }
+        g_mc_debug.movement_status = ms;        /* watch-window mirror */
+        MC_Comms_SetMovementStatus(ms);
+    }
     /* statusword + modes_of_operation_display are owned by the E1 arbiter (above). */
     g_od.error_code      = 0u;
     g_od.error_register  = 0u;
     g_od.fault_flags     = 0u;
     g_od.motor_resistance_ohm = s_motor.resistance_ohm;
     g_od.motor_inductance_h   = s_motor.inductance_h;
-    g_od.store_status    = (uint16_t)(MC_PersistentStore_HasValid() ? 1u : 0u);
+    g_od.store_status    = (uint16_t)((MC_PersistentStore_HasValid()   ? MC_IF_STORE_VALID   : 0u)
+                                    | (MC_PersistentStore_SavePending() ? MC_IF_STORE_PENDING : 0u));
+
+    /* Calibration completeness (0x2700:5, ADR-026): derived from existing state. A set bit means that
+       calibration currently has valid data; a clear bit means it is still outstanding. */
+    {
+        uint16_t done = 0u;
+        if (s_est_cfg.electrical_offset_rad != 0.0f) { done |= MC_IF_CAL_DONE_ELECTRICAL; }
+        if (s_home_offset_rad != 0.0f)               { done |= MC_IF_CAL_DONE_MECH_ZERO; }
+        if (s_cs.calibrated)                         { done |= MC_IF_CAL_DONE_CURRENT_OFFSET; }
+        g_od.cal_done_flags = done;
+    }
 }
 
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
+    g_mc_debug.fw_build = 38u;   /* build/version marker (ADR-038): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
 
     MC_SsiEncoder_LoadDefaultConfig(&s_enc_cfg);
@@ -258,6 +348,26 @@ void MC_Framework_Init(void)
     }
     MC_VelocityController_Init(&s_vel);
 
+    /* Position loop + trajectory planner (D3, ADR-028). P-default; gains refreshed from the OD by
+       od_apply_gains each slow tick. */
+    {
+        MC_PidConfig_t ppid;
+        memset(&ppid, 0, sizeof ppid);
+        ppid.kp                        = g_od.pos_kp;
+        ppid.ki                        = g_od.pos_ki;
+        ppid.kd                        = g_od.pos_kd;
+        ppid.sample_period_s           = MC_MOTION_DT_S;
+        ppid.integrator_enabled        = false;   /* P-default */
+        ppid.derivative_enabled        = false;
+        ppid.derivative_on_measurement = true;
+        s_pos_cfg.pid                                 = ppid;
+        s_pos_cfg.velocity_correction_limit_rad_per_s = 10.0f;    /* refreshed from profile_velocity */
+        s_pos_cfg.following_error_limit_rad           = 6.2832f;  /* ~1 rev error guard */
+    }
+    MC_PositionController_Init(&s_pos_ctl);
+    MC_Trajectory_Init(&s_traj);
+    MC_SignalGen_Init(&s_sig_gen);
+
     /* Object dictionary: seed defaults (its gains match the configs seeded above). */
     MC_Od_Init();
     MC_Comms_Init();        /* SPI protocol handler (transport DMA wired in F2b) */
@@ -271,9 +381,14 @@ void MC_Framework_Init(void)
         {
             s_est_cfg.electrical_offset_rad      = p.calib.electrical_offset_rad;
             s_enc_cfg.mechanical_zero_offset_rad = p.calib.mechanical_zero_offset_rad;
-            s_cs.offset_a_counts                 = p.calib.current_offset_a_counts;
-            s_cs.offset_c_counts                 = p.calib.current_offset_c_counts;
-            s_cs.calibrated                      = true;
+            /* Current offsets: a saved 0 is the "not measured" sentinel (ADR-026) -- keep the nominal
+               init offsets and leave calibrated=false so completeness reports it outstanding. */
+            if ((p.calib.current_offset_a_counts != 0.0f) || (p.calib.current_offset_c_counts != 0.0f))
+            {
+                s_cs.offset_a_counts             = p.calib.current_offset_a_counts;
+                s_cs.offset_c_counts             = p.calib.current_offset_c_counts;
+                s_cs.calibrated                  = true;
+            }
             s_home_offset_rad                    = p.calib.home_offset_rad;
             MC_Od_RestorePersistent(p.od_blob, p.od_blob_len);  /* gains/config back into g_od */
             g_mc_debug.elec_offset_rad           = p.calib.electrical_offset_rad;
@@ -472,6 +587,27 @@ void MC_MotionLoop_1kHz(void)
     if (MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample))
     {
         MC_StateEstimator_Update(&s_est, &s_est_cfg, &s_pos_sample);
+
+        /* Startup position anchor (ADR-037, hardened by ADR-038). The single-turn absolute encoder
+           loses the turn count across a power cycle, so the continuous position must be anchored to the
+           home-relative reading wrapped to the nearest turn. The original one-shot seed (s_pos_seeded)
+           raced the persistent home load on a COLD boot: it could fire with s_home_offset_rad still 0,
+           leaving continuous ~1 turn off everywhere except home (a soft reset hid it -- RAM kept the
+           good anchor so the seed never re-ran). Hardened: while the drive has NEVER been enabled,
+           re-anchor every cycle -- idempotent once correct, and self-correcting if home loads late or
+           the encoder is slow to read. s_pos_locked latches on the first enable so motion thereafter
+           tracks true multi-turn (deltas accumulate past +/-pi without being wrapped back). */
+        if (s_eff_drive)
+        {
+            s_pos_locked = true;   /* drive engaged -> freeze the anchor; track multi-turn from here */
+        }
+        else if (!s_pos_locked && s_pos_sample.valid)
+        {
+            float home_rel = s_pos_sample.position_rad - s_home_offset_rad;
+            while (home_rel >  3.14159265358979324f) { home_rel -= 6.28318530717958648f; }
+            while (home_rel < -3.14159265358979324f) { home_rel += 6.28318530717958648f; }
+            MC_StateEstimator_SeedContinuous(&s_est, s_home_offset_rad + home_rel);
+        }
     }
 
     /* Mirror to the watch window. */
@@ -511,6 +647,8 @@ void MC_MotionLoop_1kHz(void)
             s_eff_align_angle = g_mc_inject.align_angle_rad;
             s_eff_drive       = g_mc_inject.foc_enable;
             s_eff_torque_mode = !g_mc_inject.velocity_enable;
+            s_eff_position_mode = false;   /* commissioning never uses the position cascade */
+            s_eff_halt          = false;
             s_eff_iq_cmd      = g_mc_inject.iq_cmd_a;
             s_eff_id_cmd      = g_mc_inject.id_cmd_a;
             s_eff_vel_cmd     = g_mc_inject.velocity_cmd_rad_s;
@@ -522,20 +660,72 @@ void MC_MotionLoop_1kHz(void)
             /* Remote: the mode manager (OD/CiA-402) drives. Boot-safe (controlword 0 = Disabled). */
             s_eff_align = false;
             s_eff_drive = ds.operation_enabled;
+            const bool halt_rise = (ds.active_mode == MC_MODE_POSITION_HOLD) && !s_eff_halt;
+            s_eff_halt = (ds.active_mode == MC_MODE_POSITION_HOLD);
             if (ds.active_mode == MC_MODE_TORQUE_CURRENT)
             {
-                s_eff_torque_mode = true;
-                s_eff_iq_cmd      = (float)g_od.target_torque * MC_IF_CUR_SCALE;
-                s_eff_id_cmd      = 0.0f;
+                s_eff_torque_mode   = true;
+                s_eff_position_mode = false;
+                s_eff_iq_cmd        = (float)g_od.target_torque * MC_IF_CUR_SCALE;
+                s_eff_id_cmd        = 0.0f;
             }
             else if (ds.active_mode == MC_MODE_PROFILE_VELOCITY)
             {
-                s_eff_torque_mode = false;
-                s_eff_vel_cmd     = dc.target_velocity_rad_per_s;   /* = cyclic velocity_setpoint (v3) */
+                s_eff_torque_mode   = false;
+                s_eff_position_mode = false;
+                s_eff_vel_cmd       = dc.target_velocity_rad_per_s;   /* = cyclic velocity_setpoint (v3) */
+            }
+            else if (ds.active_mode == MC_MODE_PROFILE_POSITION)
+            {
+                /* D3 (ADR-028): the position cascade below produces s_eff_vel_cmd; run it as a velocity
+                   move. NEW_SETPOINT (rising edge, latched by the mode manager) starts a fresh plan. */
+                s_eff_torque_mode   = false;
+                s_eff_position_mode = true;
+                if (ds.new_setpoint_latched)
+                {
+                    MC_TrajRequest_t req;
+                    req.start.position_rad             = s_est.mechanical.position_rad - s_home_offset_rad;
+                    req.start.velocity_rad_per_s       = 0.0f;
+                    req.start.acceleration_rad_per_s2  = 0.0f;
+                    req.target_position_rad            = (float)g_od.target_position * MC_IF_POS_SCALE;
+                    req.target_velocity_rad_per_s      = 0.0f;
+                    req.target_acceleration_rad_per_s2 = 0.0f;
+                    req.requested_time_s               = (float)g_od.target_position_time_ms * 0.001f;
+                    {
+                        const float vmax = (float)g_od.profile_velocity     * MC_IF_VEL_SCALE;
+                        const float amax = (float)g_od.profile_acceleration * MC_IF_ACC_SCALE;
+                        const float dmax = (float)g_od.profile_deceleration * MC_IF_ACC_SCALE;
+                        /* Fall back to safe defaults if the profile limits are unset (0): a move then
+                           still plans rather than failing INVALID_LIMITS (which would just hold). */
+                        req.limits.max_velocity_rad_per_s      = (vmax > 0.001f) ? vmax :  2.0f;
+                        req.limits.max_acceleration_rad_per_s2 = (amax > 0.001f) ? amax : 10.0f;
+                        req.limits.max_deceleration_rad_per_s2 = (dmax > 0.001f) ? dmax : 10.0f;
+                    }
+                    req.limits.max_jerk_rad_per_s3         = 0.0f;
+                    MC_PositionController_Reset(&s_pos_ctl);
+                    (void)MC_Trajectory_Start(&s_traj, &req);
+                }
+            }
+            else if (ds.active_mode == MC_MODE_POSITION_HOLD)
+            {
+                /* HALT (ADR-035): controlled hold -- stay enabled, hold the position captured when
+                   HALT engaged. On entry, abandon any in-progress move (stay enabled, unlike
+                   quick-stop). New setpoints are ignored (the trajectory-start path lives only under
+                   MC_MODE_PROFILE_POSITION). Resume by clearing HALT: the trajectory is inactive, so
+                   D3 holds at s_pos_hold_rad until a fresh NEW_SETPOINT. */
+                s_eff_torque_mode   = false;
+                s_eff_position_mode = true;
+                if (halt_rise)
+                {
+                    s_traj.active  = false;
+                    s_pos_hold_rad = s_est.mechanical.position_rad - s_home_offset_rad;
+                    MC_PositionController_Reset(&s_pos_ctl);
+                }
             }
             else
             {
-                s_eff_drive = false;   /* disabled / quick-stop / position (not routed yet) -> safe */
+                s_eff_drive         = false;   /* disabled / quick-stop -> safe */
+                s_eff_position_mode = false;
             }
             if (dc.fault_reset) { g_mc_inject.clear_fault = true; }   /* clear oc_trip in the fast loop */
             g_od.statusword    = ds.statusword;
@@ -605,6 +795,118 @@ void MC_MotionLoop_1kHz(void)
         }
     }
 
+    /* Loop-tuning test-signal overlay (ADR-030). When a tuning mode is armed AND its operational loop
+       is enabled, an on-motor generator drives that loop's reference. The output is applied to the
+       latched loop while the generator is active, so disarming ramps the reference bumplessly to 0. */
+    {
+        const bool vel_ok = s_eff_drive && !s_eff_torque_mode && !s_eff_position_mode && !s_oc_trip;
+        const bool pos_ok = s_eff_drive &&  s_eff_position_mode && !s_oc_trip;
+        const uint8_t want = ((g_od.test_mode == MC_IF_TEST_MODE_VELOCITY) && vel_ok) ? MC_IF_TEST_MODE_VELOCITY
+                           : ((g_od.test_mode == MC_IF_TEST_MODE_POSITION) && pos_ok) ? MC_IF_TEST_MODE_POSITION
+                           :  MC_IF_TEST_MODE_OFF;
+
+        if (g_mc_inject.request_test_fire)
+        {
+            g_mc_inject.request_test_fire = false;
+            if (want != MC_IF_TEST_MODE_OFF)
+            {
+                if (want == MC_IF_TEST_MODE_POSITION)
+                {
+                    s_pos_tune_entry_rad = s_est.mechanical.position_rad - s_home_offset_rad;
+                }
+                /* Accel limit applies to position tuning only (ADR-032); velocity tuning's rate is
+                   already its acceleration, so pass 0 (linear ramp) there. */
+                const float accel_lim = (want == MC_IF_TEST_MODE_POSITION) ? g_od.test_max_accel : 0.0f;
+                MC_SignalGen_Start(&s_sig_gen, g_od.test_amplitude, g_od.test_rate,
+                                   g_od.test_dwell_s, g_od.test_pause_s, accel_lim,
+                                   g_od.test_continuous != 0u);
+                s_sig_loop = want;
+            }
+        }
+        if ((want == MC_IF_TEST_MODE_OFF) && MC_SignalGen_Active(&s_sig_gen))
+        {
+            MC_SignalGen_Stop(&s_sig_gen);   /* disarmed / conditions lost -> ramp to 0 */
+        }
+
+        s_sig_value = MC_SignalGen_Update(&s_sig_gen, MC_MOTION_DT_S);
+        if (!MC_SignalGen_Active(&s_sig_gen)) { s_sig_loop = MC_IF_TEST_MODE_OFF; }
+
+        /* Velocity-tuning: the generator IS the velocity-loop demand (position-tuning is applied in D3). */
+        if (MC_SignalGen_Active(&s_sig_gen) && (s_sig_loop == MC_IF_TEST_MODE_VELOCITY) && vel_ok)
+        {
+            s_eff_vel_cmd = s_sig_value;
+        }
+        g_od.test_active = MC_SignalGen_Active(&s_sig_gen) ? 1u : 0u;
+        g_od.test_signal = s_sig_value;   /* 0x2910:8 PDO -- the generator output, for graphing */
+    }
+
+    /* Stage D3: position cascade (ADR-028). In PROFILE_POSITION, advance the trajectory and run the
+       position loop; the result is a velocity demand the D2 stage below executes (so all velocity/
+       torque limits + the over-current trip still apply). */
+    if (s_eff_drive && s_eff_position_mode && !s_oc_trip)
+    {
+        const float p_act = s_est.mechanical.position_rad - s_home_offset_rad;   /* home-relative */
+        if (!s_pos_on)
+        {
+            MC_PositionController_Reset(&s_pos_ctl);
+            s_pos_hold_rad = p_act;   /* latch the current position to hold until a move is commanded */
+            s_pos_on = true;
+        }
+
+        float p_dem, v_ff, a_ff;
+        bool  complete;
+        if (s_eff_halt)
+        {
+            /* HALT hold (ADR-035): hold at the position captured when HALT engaged (move abandoned
+               in the arbiter). Pure feedback -- no FF, no trajectory. */
+            p_dem = s_pos_hold_rad; v_ff = 0.0f; a_ff = 0.0f; complete = true;
+        }
+        else if (MC_SignalGen_Active(&s_sig_gen) && (s_sig_loop == MC_IF_TEST_MODE_POSITION))
+        {
+            /* Position-tuning (ADR-030): generated reference around the captured entry position,
+               bypassing the trajectory. The generator emits its velocity, used as the FF (ADR-031) --
+               so a ramp feeds forward ±rate; a step (rate 0) has vel 0, i.e. pure feedback. */
+            p_dem = s_pos_tune_entry_rad + s_sig_value;
+            v_ff = MC_SignalGen_Velocity(&s_sig_gen); a_ff = 0.0f; complete = false;
+            s_pos_hold_rad = p_dem;   /* hold here when the test ends */
+        }
+        else
+        {
+            /* Use the active plan if there is one; otherwise HOLD the latched position. A freshly-init
+               or failed planner evaluates to position 0 (sp.valid == false) -- driving to it would slam
+               the axis to home (the "only moves to 0" bug). */
+            const MC_MotionSetpoint_t sp = MC_Trajectory_Update(&s_traj, MC_MOTION_DT_S);
+            if (sp.valid)
+            {
+                p_dem = sp.position_rad; v_ff = sp.velocity_rad_per_s; a_ff = sp.acceleration_rad_per_s2;
+                complete = sp.complete; s_pos_hold_rad = sp.position_rad;
+            }
+            else
+            {
+                p_dem = s_pos_hold_rad; v_ff = 0.0f; a_ff = 0.0f; complete = true;
+            }
+        }
+
+        const float vcorr = MC_PositionController_Update(&s_pos_ctl, &s_pos_cfg, p_dem, p_act);
+        s_eff_vel_cmd     = (s_vel_ff_gain * v_ff) + vcorr;  /* velocity demand = FF-gain·FF + position correction (ADR-031) */
+        s_accel_ff_rad_s2 = a_ff;             /* -> torque request inertia slot */
+
+        const float perr = s_pos_ctl.position_error_rad;
+        const bool reached = complete && (perr < MC_POS_TARGET_WINDOW_RAD) && (perr > -MC_POS_TARGET_WINDOW_RAD);
+        if (reached) { g_od.statusword |= MC_IF_SW_TARGET_REACHED; }
+
+        g_mc_debug.pos_demand_rad = p_dem;
+        g_mc_debug.pos_actual_rad = p_act;
+        g_mc_debug.pos_error_rad  = perr;
+        g_mc_debug.target_reached = reached;
+    }
+    else
+    {
+        s_pos_on          = false;
+        s_accel_ff_rad_s2 = 0.0f;
+        g_mc_debug.target_reached = false;
+    }
+
     /* Stage D2: velocity cascade -> torque request -> iq, published to the fast loop. */
     const bool vel_active = s_eff_drive && !s_eff_torque_mode && !s_oc_trip;
     if (vel_active)
@@ -617,7 +919,7 @@ void MC_MotionLoop_1kHz(void)
 
         MC_CurrentRequestDebug_t crd;
         MC_MotorTorqueRequest_t treq =
-            MC_CurrentRequest_Update(&s_torque_cfg, tcorr, 0.0f /* accel_ff: D3 */, vact, true, &crd);
+            MC_CurrentRequest_Update(&s_torque_cfg, tcorr, s_accel_ff_rad_s2 /* trajectory accel FF (D3) */, vact, true, &crd);
         MC_FocCurrentCommand_t fcmd = MC_CurrentRequest_ToFocCommand(&s_torque_cfg, &treq);
 
         s_iq_cmd_published = fcmd.iq_a;
@@ -682,6 +984,35 @@ void MC_SlowLoop_10_100Hz(void)
     {
         g_mc_inject.request_align_routine = true;     /* medium loop runs the alignment routine */
         g_od.cal_command = MC_IF_CAL_NONE;
+    }
+    /* Current-offset calibration (ADR-026): the fast loop averages zero-current ADC samples, so it
+       is only valid with the power stage off. Accept when PWM is off; otherwise reject. */
+    if (g_od.cal_command == MC_IF_CAL_CURRENT_OFFSET)
+    {
+        g_od.cal_command = MC_IF_CAL_NONE;
+        if (!s_pwm_on)
+        {
+            g_mc_inject.request_offset_cal = true;        /* fast loop runs MC_CurrentSense_CalibrateOffsets */
+            g_od.cal_status = MC_IF_CAL_CURRENT_OFFSET;   /* accepted / in progress */
+        }
+        else
+        {
+            g_od.cal_status = MC_CAL_STATUS_FAULT;        /* rejected: drive / PWM active */
+        }
+    }
+    /* Current-offset cal finished once the fast loop clears the request -> report done and
+       auto-save the freshly measured offsets (matches alignment / set-mech-zero, ADR-026). */
+    if ((g_od.cal_status == MC_IF_CAL_CURRENT_OFFSET) && !g_mc_inject.request_offset_cal)
+    {
+        g_od.cal_status = MC_IF_CAL_NONE;
+        params_save();
+    }
+
+    /* Loop-tuning test-signal trigger (0x2910:6 -> fire the generator; ADR-030). */
+    if (g_od.test_trigger != 0u)
+    {
+        g_od.test_trigger = 0u;
+        g_mc_inject.request_test_fire = true;
     }
 
     /* Persistence: flash writes only when the power stage is off, to avoid disturbing an
