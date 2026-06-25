@@ -30,6 +30,13 @@ typedef struct
 void MC_CurrentSense_Init(MC_CurrentSense_t *cs);
 
 /**
+ * @brief Repoint ADC2 to the new brushed board's leg-current input: ADC2_IN7 / PC1 = I_A, instead of the
+ *        reference board's IN6 / PC0 (ex-I_C, unused and floating on the new board). Call once at init,
+ *        before the ADC is started. STM32 boundary. See ADR-039 (new-board pinout note).
+ */
+void MC_CurrentSense_SelectHBridgeLegs(void);
+
+/**
  * @brief Accumulate one zero-current sample toward an offset calibration.
  *
  * Call once per fast cycle with the power stage in safe-off (no current flowing). Averages

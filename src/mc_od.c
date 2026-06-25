@@ -119,6 +119,7 @@ void MC_OdStore_LoadDefaults(void)
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;
     g_od.foc_iq_kp = 1.7f;   g_od.foc_iq_ki = 1700.0f;
+    g_od.hb_cur_kp = 5.55f;  g_od.hb_cur_ki = 6300.0f;  /* brushed: test motor R=4.2 L=3.7mH @ wc=1500 (ADR-039) */
     g_od.foc_voltage_limit_v = 13.8f;
 
     /* Encoder / estimator */

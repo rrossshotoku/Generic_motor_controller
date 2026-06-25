@@ -46,6 +46,22 @@ void MC_CurrentSense_Init(MC_CurrentSense_t *cs)
     s_cal_active = false;
 }
 
+void MC_CurrentSense_SelectHBridgeLegs(void)
+{
+    /* New brushed board: I_A arrives on PC1 (ADC2_IN7); the reference board's PC0 (ADC2_IN6 = I_C) is
+       unused and floats. Repoint ADC2 to IN7 so the dual regular-simultaneous read samples I_A (ADC2) +
+       I_B (ADC1, PA0). Must run before HAL_ADC_Start (called from MC_Framework_Init). PC1 is already
+       analog-configured by CubeMX (adc.c MspInit). See ADR-039. */
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel      = ADC_CHANNEL_7;
+    sConfig.Rank         = ADC_REGULAR_RANK_1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_92CYCLES_5;
+    sConfig.SingleDiff   = ADC_SINGLE_ENDED;
+    sConfig.OffsetNumber = ADC_OFFSET_NONE;
+    sConfig.Offset       = 0;
+    (void)HAL_ADC_ConfigChannel(&hadc2, &sConfig);
+}
+
 bool MC_CurrentSense_CalibrateOffsets(MC_CurrentSense_t *cs, uint16_t sample_count)
 {
     if (!s_cal_active)

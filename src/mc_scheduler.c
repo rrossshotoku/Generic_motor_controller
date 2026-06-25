@@ -8,6 +8,9 @@
 #include "mc_math.h"
 #include "mc_pwm.h"
 #include "mc_foc.h"
+#include "mc_pid.h"        /* brushed armature-current PI (ADR-039) */
+#include "mc_hbridge.h"    /* brushed-DC locked anti-phase modulator (ADR-039) */
+#include "mc_dac.h"        /* debug DAC output on PA4 for scoping (ADR-005) */
 #include "mc_persistent_store.h"
 #include "mc_calib_data.h"
 #include "mc_velocity_controller.h"
@@ -75,6 +78,10 @@ static MC_Foc_t       s_foc;
 static MC_FocConfig_t s_foc_cfg;
 static bool           s_foc_on;       /* FOC active (for entry reset) */
 static volatile float s_elec_angle;   /* electrical angle published medium->fast (atomic float) */
+
+/* Brushed-DC backend (ADR-039): single armature-current PI -> locked anti-phase H-bridge voltage. */
+static MC_Pid_t       s_hb_ipi;
+static MC_PidConfig_t s_hb_ipi_cfg;
 
 /* Stage D2: velocity loop + torque/current request (runs in the medium loop). */
 static MC_MotorModel_t               s_motor;
@@ -185,6 +192,7 @@ static void od_apply_gains(void)
     s_foc_cfg.id_pi.kp = g_od.foc_id_kp;  s_foc_cfg.id_pi.ki = g_od.foc_id_ki;
     s_foc_cfg.iq_pi.kp = g_od.foc_iq_kp;  s_foc_cfg.iq_pi.ki = g_od.foc_iq_ki;
     s_foc_cfg.voltage_limit_v = g_od.foc_voltage_limit_v;
+    s_hb_ipi_cfg.kp = g_od.hb_cur_kp;  s_hb_ipi_cfg.ki = g_od.hb_cur_ki;   /* brushed armature-current PI (0x2400:6,7) */
 
     s_est_cfg.velocity_filter_hz = g_od.est_velocity_filter_hz;
     /* current_trip stays on the watch-window inject path during bring-up (read-reflected in
@@ -203,6 +211,7 @@ static void od_mirror_live(void)
     g_od.tlm_vd_v                 = g_mc_debug.vd_v;
     g_od.tlm_vq_v                 = g_mc_debug.vq_v;
     g_od.tlm_electrical_angle_rad = g_mc_debug.elec_angle_rad;
+    g_od.tlm_i_arm_a              = g_mc_debug.i_arm_a;   /* brushed armature current (0x2410:6) */
     g_od.tlm_mech_position_rad    = g_mc_debug.mech_position_rad;
     g_od.tlm_mech_velocity_rad_s  = g_mc_debug.mech_velocity_rad_s;
     g_od.tlm_pos_demand_rad       = g_mc_debug.pos_demand_rad;   /* abs position demand (0x2510:3 PDO) -- graph vs 0x6064 */
@@ -262,8 +271,9 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 38u;   /* build/version marker (ADR-038): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 47u;   /* build/version marker (ADR-038/039): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
+    MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
     MC_SsiEncoder_LoadDefaultConfig(&s_enc_cfg);
     MC_SsiEncoder_Init(&s_enc, &s_enc_cfg);
@@ -291,6 +301,7 @@ void MC_Framework_Init(void)
     /* C2 drive defaults (drive stays off until inject_enable is set). */
     g_mc_inject.vbus_v          = 24.0f;   /* set to your actual supply voltage */
     g_mc_inject.current_limit_a = 3.0f;    /* over-current trip [A] (headroom over ~1.5-2 A breakaway) */
+    g_mc_inject.dac_scale_v_per_a = 1.0f;  /* debug DAC (PA4): 1 A -> 1 V (0..3.3 A full scale) */
 
     /* D1 FOC current-loop config (ported gains; runs in the fast loop). */
     {
@@ -314,6 +325,26 @@ void MC_Framework_Init(void)
         s_foc_cfg.use_cordic_if_available = false;
     }
     MC_Foc_Init(&s_foc, &s_foc_cfg);
+
+    /* Brushed-DC armature-current PI (ADR-039): runs at the fast-loop rate like FOC; its output is the
+       motor voltage command fed to the locked anti-phase modulator. Gains start gentle and are live-
+       tunable from the watch window (hb_kp/hb_ki) -- retune for the brushed motor's R/L during bring-up. */
+    {
+        MC_Pid_Init(&s_hb_ipi);
+        MC_Pid_SetEnabled(&s_hb_ipi, true);
+        s_hb_ipi_cfg.kp                        = 5.55f;   /* bootstrap; od_apply_gains overwrites from 0x2400:6 hb_cur_kp */
+        s_hb_ipi_cfg.ki                        = 6300.0f; /* bootstrap; od_apply_gains overwrites from 0x2400:7 hb_cur_ki */
+        s_hb_ipi_cfg.kd                        = 0.0f;
+        s_hb_ipi_cfg.sample_period_s           = MC_FAST_DT_S;
+        s_hb_ipi_cfg.output_min                = -24.0f;   /* |v| <= bus; the modulator clamps the duty by max_modulation */
+        s_hb_ipi_cfg.output_max                =  24.0f;
+        s_hb_ipi_cfg.integrator_min            = -24.0f;
+        s_hb_ipi_cfg.integrator_max            =  24.0f;
+        s_hb_ipi_cfg.derivative_filter_hz      = 0.0f;
+        s_hb_ipi_cfg.integrator_enabled        = true;
+        s_hb_ipi_cfg.derivative_enabled        = false;
+        s_hb_ipi_cfg.derivative_on_measurement = true;
+    }
 
     /* D2 velocity loop + torque model. Gains ported from the proven current-output loop,
        expressed as torque = old_gain * Kt (net iq identical); output limit = current * Kt. */
@@ -396,6 +427,16 @@ void MC_Framework_Init(void)
             g_mc_debug.store_valid               = true;
         }
     }
+
+    /* Apply the selected drive backend (0x2000:6 motor_backend_sel, persisted; default 0 = BLDC/FOC).
+       Per-board, so it is read once here at boot: it picks the dispatch path and the current-sense ADC
+       channel (FOC stays on ADC2_IN6; brushed repoints ADC2 to IN7 = the new board's I_A). See ADR-039. */
+    if (g_od.motor_backend_sel == 1u)
+    {
+        s_motor.backend_type = MC_MOTOR_BACKEND_BRUSHED_DC_HBRIDGE;
+        MC_CurrentSense_SelectHBridgeLegs();
+    }
+    g_mc_debug.backend_type = (uint8_t)s_motor.backend_type;
 
     g_mc_debug.pwm_enabled = false;   /* power stage starts in safe-off */
 }
@@ -495,12 +536,27 @@ void MC_FastLoop_20kHz(void)
     g_mc_debug.current_valid      = s_currents.valid;
     g_mc_debug.current_calibrated = s_cs.calibrated;
 
-    /* Stage C2: over-current monitor + open-loop d-axis voltage (DRIVE gated by inject_enable). */
+    /* Drive-backend selection (ADR-039) -- evaluated before the over-current monitor because the brushed
+       H-bridge senses only the two driven legs: its trip uses the armature leg alone. The 3-phase
+       reconstruction ib = -(ia+ic) is invalid when the third leg is disconnected -- its shunt input
+       floats and rails, which false-trips at ~2x the rail current (~65 A seen on the new board, where the
+       old I_C input PC0/ADC2_IN6 is unused). The backend is selected by brushed_backend
+       (watch window) regardless of inject_enable -- so a remote/PC current command drives the brushed
+       loop too -- or by s_motor.backend_type for a fixed brushed build. See ADR-005/039. */
+    const bool brushed = g_mc_inject.brushed_backend
+                         || (s_motor.backend_type == MC_MOTOR_BACKEND_BRUSHED_DC_HBRIDGE);
+    g_mc_debug.backend_type = brushed ? 1u : 0u;
+
+    /* Stage C2: over-current monitor. FOC: max over all three phases. Brushed: the armature leg on ADC1
+       only (s_currents.ia_a); ib/ic involve the disconnected leg and would false-trip. */
     float imax = fabsf(s_currents.ia_a);
-    const float aib = fabsf(s_currents.ib_a);
-    const float aic = fabsf(s_currents.ic_a);
-    if (aib > imax) { imax = aib; }
-    if (aic > imax) { imax = aic; }
+    if (!brushed)
+    {
+        const float aib = fabsf(s_currents.ib_a);
+        const float aic = fabsf(s_currents.ic_a);
+        if (aib > imax) { imax = aib; }
+        if (aic > imax) { imax = aic; }
+    }
     g_mc_debug.i_max_a = imax;
 
     if (g_mc_inject.clear_fault) { s_oc_trip = false; g_mc_inject.clear_fault = false; }
@@ -508,7 +564,55 @@ void MC_FastLoop_20kHz(void)
 
     const bool blocked = s_oc_trip || g_mc_inject.request_offset_cal;
 
-    if (!blocked && s_eff_drive)
+    if (brushed && !blocked && s_eff_drive)
+    {
+        /* Armature current for the loop. The new board's ADC1 reads leg B (I_B = -I_A), so s_currents.ia_a
+           is the NEGATIVE of the forward armature current -- negate it so the feedback sign matches the
+           command. (An inverted measurement is positive feedback: the integrator runs the current away.
+           Magnitude was verified vs a meter; the DAC shows |i| and was correct, only the sign was wrong.)
+           Dual-leg (I_A - I_B)/2 lands once ADC2 reads IN7 = I_A. */
+        const float i_arm = -s_currents.ia_a;
+        const float i_cmd = s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published;
+
+        /* Open-loop voltage (bring-up: verify current sign/scaling) OR the closed armature-current PI.
+           Open-loop holds the PI reset so closing it afterwards is bumpless. Gains are live-tunable. */
+        float v_cmd;
+        if (g_mc_inject.hb_open_loop)
+        {
+            v_cmd = g_mc_inject.hb_voltage_v;
+            MC_Pid_Reset(&s_hb_ipi);
+        }
+        else
+        {
+            v_cmd = MC_Pid_Update(&s_hb_ipi, &s_hb_ipi_cfg, i_cmd, i_arm);   /* gains from od_apply_gains (0x2400:6,7) */
+        }
+
+        const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
+        MC_HBridgeConfig_t hbcfg;
+        hbcfg.vbus_v         = vbus;
+        hbcfg.max_modulation = 0.95f;
+        MC_PwmDuty_t duty = MC_HBridge_LockedAntiphase(v_cmd, &hbcfg);
+
+        if (!s_pwm_on) { MC_Pwm_Start(); s_pwm_on = true; }
+        MC_Pwm_SetDutyFast(&duty);
+        g_mc_debug.pwm_enabled  = true;
+        g_mc_debug.i_arm_a      = i_arm;
+        g_mc_debug.v_cmd_v      = v_cmd;
+        g_mc_debug.vd_applied_v = 0.0f;
+        s_foc_on = false;
+    }
+    else if (brushed)
+    {
+        /* Brushed but disabled/blocked -> safe-off and hold the current PI at zero (anti-windup). */
+        MC_Pid_Reset(&s_hb_ipi);
+        if (s_pwm_on) { MC_Pwm_ForceSafeOff(); s_pwm_on = false; }
+        g_mc_debug.pwm_enabled  = false;
+        g_mc_debug.i_arm_a      = -s_currents.ia_a;   /* forward-positive (ADC1 = I_B = -I_A on this board) */
+        g_mc_debug.v_cmd_v      = 0.0f;
+        g_mc_debug.vd_applied_v = 0.0f;
+        s_foc_on = false;
+    }
+    else if (!blocked && s_eff_drive)
     {
         /* Closed FOC current loop (commissioning or remote -- effective command, E1). */
         if (!s_foc_on) { MC_Foc_Reset(&s_foc); s_foc_on = true; }
@@ -573,6 +677,10 @@ void MC_FastLoop_20kHz(void)
         }
     }
     g_mc_debug.overcurrent_trip = s_oc_trip;
+
+    /* Debug DAC (PA4 / DAC1_OUT1): mirror i_max_a to the scope, scaled by dac_scale_v_per_a (default
+       1 V/A -> 1 A = 1 V), clamped to 0..Vref. Output saturates at ~3.3 A with the default scale. */
+    MC_Dac_SetVolts(g_mc_debug.i_max_a * g_mc_inject.dac_scale_v_per_a);
 }
 
 void MC_MotionLoop_1kHz(void)
@@ -801,8 +909,10 @@ void MC_MotionLoop_1kHz(void)
     {
         const bool vel_ok = s_eff_drive && !s_eff_torque_mode && !s_eff_position_mode && !s_oc_trip;
         const bool pos_ok = s_eff_drive &&  s_eff_position_mode && !s_oc_trip;
+        const bool cur_ok = s_eff_drive &&  s_eff_torque_mode && !s_oc_trip;   /* current/torque tuning (ADR-030) */
         const uint8_t want = ((g_od.test_mode == MC_IF_TEST_MODE_VELOCITY) && vel_ok) ? MC_IF_TEST_MODE_VELOCITY
                            : ((g_od.test_mode == MC_IF_TEST_MODE_POSITION) && pos_ok) ? MC_IF_TEST_MODE_POSITION
+                           : ((g_od.test_mode == MC_IF_TEST_MODE_CURRENT)  && cur_ok) ? MC_IF_TEST_MODE_CURRENT
                            :  MC_IF_TEST_MODE_OFF;
 
         if (g_mc_inject.request_test_fire)
@@ -835,6 +945,12 @@ void MC_MotionLoop_1kHz(void)
         if (MC_SignalGen_Active(&s_sig_gen) && (s_sig_loop == MC_IF_TEST_MODE_VELOCITY) && vel_ok)
         {
             s_eff_vel_cmd = s_sig_value;
+        }
+        /* Current-tuning: the generator IS the current/torque command [A] (overrides the arbiter's iq).
+           amplitude (0x2910:2) is the requested current; rate 0 -> a step pulse. ADR-030. */
+        if (MC_SignalGen_Active(&s_sig_gen) && (s_sig_loop == MC_IF_TEST_MODE_CURRENT) && cur_ok)
+        {
+            s_eff_iq_cmd = s_sig_value;
         }
         g_od.test_active = MC_SignalGen_Active(&s_sig_gen) ? 1u : 0u;
         g_od.test_signal = s_sig_value;   /* 0x2910:8 PDO -- the generator output, for graphing */

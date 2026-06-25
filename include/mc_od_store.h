@@ -21,7 +21,8 @@ typedef struct
     float    vel_kp, vel_ki, vel_kd;                 /* 0x2300 */
     float    vel_current_limit_a;                    /* 0x2300:4 */
     float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */
-    float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400 */
+    float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
+    float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed armature-current PI (ADR-039) */
     float    est_electrical_offset_rad;              /* 0x2500:1 */
     float    est_velocity_filter_hz;                 /* 0x2500:2 */
     float    est_obs_kp, est_obs_ki, est_obs_kv;     /* 0x2500:3..5 */
@@ -29,6 +30,7 @@ typedef struct
     float    current_trip_a;                         /* 0x2600:2 */
     float    motor_kt_nm_per_a, motor_inertia_kg_m2; /* 0x2000:1,2 */
     uint16_t motor_pole_pairs;                       /* 0x2000:5 */
+    uint8_t  motor_backend_sel;                      /* 0x2000:6 (0=BLDC/FOC, 1=brushed H-bridge; ADR-039) */
 
     /* --- Commands (RW; placeholders until wired to mode manager / inject path) --- */
     uint8_t  inject_enable, inject_target, inject_step_trigger; /* 0x2900 */
@@ -51,7 +53,8 @@ typedef struct
 
     /* --- Telemetry (RO; mirrored from the live control state) --- */
     float    tlm_vel_demand_rad_s, tlm_vel_actual_rad_s, tlm_vel_iq_cmd_a;   /* 0x2310 */
-    float    tlm_id_meas_a, tlm_iq_meas_a, tlm_vd_v, tlm_vq_v, tlm_electrical_angle_rad; /* 0x2410 */
+    float    tlm_id_meas_a, tlm_iq_meas_a, tlm_vd_v, tlm_vq_v, tlm_electrical_angle_rad; /* 0x2410:1-5 */
+    float    tlm_i_arm_a;                            /* 0x2410:6 brushed armature current (ADR-039) */
     float    tlm_mech_position_rad, tlm_mech_velocity_rad_s;                 /* 0x2510:1,2 */
     float    tlm_pos_demand_rad;                                            /* 0x2510:3 PDO -- absolute (home-relative) position demand */
     float    tlm_bus_voltage_v;                                              /* 0x2600:3 */

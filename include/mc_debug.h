@@ -25,6 +25,9 @@ typedef struct
     uint32_t medium_count;         /**< 1 kHz medium-loop iteration counter. */
     uint32_t slow_count;           /**< 100 Hz slow-loop iteration counter. */
     uint32_t fw_build;             /**< Firmware build/version marker (ADR-038); confirms the flashed image. */
+    uint8_t  backend_type;         /**< Active drive backend (ADR-039): 0 = BLDC/FOC 3-shunt, 1 = brushed-DC H-bridge. */
+    float    i_arm_a;              /**< Brushed: armature current [A] (ADR-039). */
+    float    v_cmd_v;              /**< Brushed: commanded H-bridge motor voltage [V] (ADR-039). */
 
     uint32_t fast_cycles;          /**< Last fast-loop body duration [CPU cycles]. */
     uint32_t fast_cycles_max;      /**< Worst-case fast-loop body duration [CPU cycles]. */
@@ -121,8 +124,14 @@ typedef struct
     float id_cmd_a;              /**< d-axis current command [A] (usually 0). */
     bool  velocity_enable;       /**< Select the velocity loop (iq comes from it, not iq_cmd_a). */
     float velocity_cmd_rad_s;    /**< Velocity demand [rad/s] for the velocity loop. */
+
+    /* --- Brushed-DC backend (ADR-039; bring-up backend flip + live current-loop gains) --- */
+    bool  brushed_backend;       /**< Bring-up: with inject_enable, run the brushed H-bridge backend (vs FOC). */
+    bool  hb_open_loop;          /**< Bring-up: bypass the current PI, command hb_voltage_v directly (verify sign/scaling first). */
+    float hb_voltage_v;          /**< Open-loop motor voltage command [V] used when hb_open_loop is set. */
     bool  request_factory_reset; /**< Erase the stored calibration (applied when drive is off). */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
+    float dac_scale_v_per_a;    /**< Debug DAC (PA4) scale [V/A] for the i_max_a output (default 1 -> 1 A = 1 V). */
 } MC_Inject_t;
 
 /** @brief Live framework snapshot (add to the debugger watch window). */
