@@ -15,7 +15,7 @@ architecture:
     access: [object_read_write, cyclic_process_data]
     protocol_version: 4                                       # ADR-033/REQ-0013 (3->4; fixed cyclic header gained position_actual + movement_status)
   initial_motor_backend: three_shunt_bldc_pmsm_foc
-  future_motor_backend: brushed_dc_hbridge
+  future_motor_backend: brushed_dc_hbridge                 # ADR-039 (board profile 1: same .ioc, legs A+B as an H-bridge, leg C off; ADC2 IN6->IN7 so I_A+I_B sensed, i_armature=(I_A-I_B)/2; backend dispatch on backend_type; outer cascade reused). Branch brushed-dc-backend. OPEN: modulation scheme, quadrature encoder, bottom-stroke homing (own ADRs)
 feedback:
   initial_position_feedback: configurable_ssi_absolute_encoder
   future_position_feedback: quadrature_encoder
