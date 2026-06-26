@@ -22,12 +22,16 @@ typedef struct
     float    vel_current_limit_a;                    /* 0x2300:4 */
     float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
-    float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed armature-current PI (ADR-039) */
+    float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed PI gains -- DERIVED, RO (ADR-039) */
+    float    hb_cur_bandwidth;                       /* 0x2400:8 brushed current-loop bandwidth wc [rad/s] */
     float    est_electrical_offset_rad;              /* 0x2500:1 */
     float    est_velocity_filter_hz;                 /* 0x2500:2 */
     float    est_obs_kp, est_obs_ki, est_obs_kv;     /* 0x2500:3..5 */
     uint8_t  est_use_observer;                       /* 0x2500:6 */
     float    current_trip_a;                         /* 0x2600:2 */
+    float    max_velocity_rad_s;                     /* 0x2600:4 motor safety envelope -- vel ceiling (ADR-040) */
+    float    max_accel_rad_s2;                       /* 0x2600:5 motor safety envelope -- accel ceiling (ADR-040) */
+    float    pos_limit_lo_rad, pos_limit_hi_rad;     /* 0x2600:6,7 soft position limits, home-rel (ADR-040; lo>=hi=off) */
     float    motor_kt_nm_per_a, motor_inertia_kg_m2; /* 0x2000:1,2 */
     uint16_t motor_pole_pairs;                       /* 0x2000:5 */
     uint8_t  motor_backend_sel;                      /* 0x2000:6 (0=BLDC/FOC, 1=brushed H-bridge; ADR-039) */

@@ -192,7 +192,17 @@ static void od_apply_gains(void)
     s_foc_cfg.id_pi.kp = g_od.foc_id_kp;  s_foc_cfg.id_pi.ki = g_od.foc_id_ki;
     s_foc_cfg.iq_pi.kp = g_od.foc_iq_kp;  s_foc_cfg.iq_pi.ki = g_od.foc_iq_ki;
     s_foc_cfg.voltage_limit_v = g_od.foc_voltage_limit_v;
-    s_hb_ipi_cfg.kp = g_od.hb_cur_kp;  s_hb_ipi_cfg.ki = g_od.hb_cur_ki;   /* brushed armature-current PI (0x2400:6,7) */
+    /* Brushed current loop: R/L are config (0x2000:3,4 -> the model); the gains are DERIVED from R/L +
+       bandwidth (0x2400:8) and reported read-only at 0x2400:6,7. kp = wc*L, ki = wc*R cancels the winding pole. */
+    s_motor.resistance_ohm = g_od.motor_resistance_ohm;
+    s_motor.inductance_h   = g_od.motor_inductance_h;
+    {
+        const float wc  = (g_od.hb_cur_bandwidth > 1.0f) ? g_od.hb_cur_bandwidth : 1500.0f;
+        s_hb_ipi_cfg.kp = wc * g_od.motor_inductance_h;
+        s_hb_ipi_cfg.ki = wc * g_od.motor_resistance_ohm;
+        g_od.hb_cur_kp  = s_hb_ipi_cfg.kp;   /* RO readback of the derived gains */
+        g_od.hb_cur_ki  = s_hb_ipi_cfg.ki;
+    }
 
     s_est_cfg.velocity_filter_hz = g_od.est_velocity_filter_hz;
     /* current_trip stays on the watch-window inject path during bring-up (read-reflected in
@@ -217,11 +227,9 @@ static void od_mirror_live(void)
     g_od.tlm_pos_demand_rad       = g_mc_debug.pos_demand_rad;   /* abs position demand (0x2510:3 PDO) -- graph vs 0x6064 */
     g_od.tlm_bus_voltage_v        = g_mc_inject.vbus_v;   /* no Vbus sensor yet */
 
-    g_od.est_electrical_offset_rad = s_est_cfg.electrical_offset_rad;
-    g_od.est_obs_kp = g_mc_inject.obs_kp;
-    g_od.est_obs_ki = g_mc_inject.obs_ki;
-    g_od.est_obs_kv = g_mc_inject.obs_kv;
-    g_od.est_use_observer = g_mc_inject.use_finite_diff_velocity ? 0u : 1u;
+    g_od.est_electrical_offset_rad = s_est_cfg.electrical_offset_rad;   /* cal result -- display only (RO) */
+    /* est_obs_kp/ki/kv + est_use_observer (0x2500:3-6) are OD config applied in the medium loop --
+       NOT mirrored here, so GUI writes stick (audit fix; were overwritten from g_mc_inject). */
     /* current_trip_a (0x2600:2) is OD-sourced now -- applied to the live trip in od_apply_gains.
        Do NOT mirror the live value back here: it would clobber a GUI/OD write every cycle (the
        original "can't set the trip from the GUI" bug). (ADR-029) */
@@ -234,8 +242,8 @@ static void od_mirror_live(void)
     g_od.torque_actual   = (int32_t)(g_mc_debug.iq_meas_a           / MC_IF_CUR_SCALE);
 
     /* movement_status (REQ-0013/ADR-033) -> pushed to the fixed cyclic header. MOVING = enabled and the
-       axis is commanded or measured to be turning; ON_TARGET = position-loop target reached; AT_LIMIT_LO/HI
-       reserved 0 (no motor soft limits yet). */
+       axis is commanded or measured to be turning; ON_TARGET = position-loop target reached;
+       AT_LIMIT_LO/HI = at/past a manually-set soft position limit (ADR-040). */
     {
         const float vdem = s_eff_vel_cmd;
         const float vact = g_mc_debug.mech_velocity_rad_s;
@@ -245,6 +253,13 @@ static void od_mirror_live(void)
             ms |= MC_IF_MOVE_MOVING;
         }
         if (g_mc_debug.target_reached) { ms |= MC_IF_MOVE_ON_TARGET; }
+        /* Soft position limits (ADR-040): flag AT_LIMIT_LO/HI when at/past a manually-set limit. lo>=hi = off. */
+        if (g_od.pos_limit_hi_rad > g_od.pos_limit_lo_rad)
+        {
+            const float pos_rel = s_est.mechanical.position_rad - s_home_offset_rad;
+            if (pos_rel <= g_od.pos_limit_lo_rad) { ms |= MC_IF_MOVE_AT_LIMIT_LO; }
+            if (pos_rel >= g_od.pos_limit_hi_rad) { ms |= MC_IF_MOVE_AT_LIMIT_HI; }
+        }
         g_mc_debug.movement_status = ms;        /* watch-window mirror */
         MC_Comms_SetMovementStatus(ms);
     }
@@ -252,8 +267,8 @@ static void od_mirror_live(void)
     g_od.error_code      = 0u;
     g_od.error_register  = 0u;
     g_od.fault_flags     = 0u;
-    g_od.motor_resistance_ohm = s_motor.resistance_ohm;
-    g_od.motor_inductance_h   = s_motor.inductance_h;
+    /* motor_resistance/inductance (0x2000:3,4) are now config inputs (applied in od_apply_gains),
+       no longer mirrored from the model here -- writing them sticks (ADR-039 R/L promotion). */
     g_od.store_status    = (uint16_t)((MC_PersistentStore_HasValid()   ? MC_IF_STORE_VALID   : 0u)
                                     | (MC_PersistentStore_SavePending() ? MC_IF_STORE_PENDING : 0u));
 
@@ -271,7 +286,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 47u;   /* build/version marker (ADR-038/039): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 51u;   /* build/version marker (ADR-038/039/040): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -291,12 +306,7 @@ void MC_Framework_Init(void)
         s_est_cfg.use_observer          = true;      /* ADR-003 default */
     }
     MC_StateEstimator_Init(&s_est);
-
-    /* Seed the live observer-tuning knobs (watch-window writable; not gated, no drive). */
-    g_mc_inject.obs_kp = s_est_cfg.obs_kp;
-    g_mc_inject.obs_ki = s_est_cfg.obs_ki;
-    g_mc_inject.obs_kv = s_est_cfg.obs_kv;
-    g_mc_inject.use_finite_diff_velocity = false;
+    /* Observer gains + velocity-source default live in the OD (0x2500:3-6, seeded in mc_od.c). */
 
     /* C2 drive defaults (drive stays off until inject_enable is set). */
     g_mc_inject.vbus_v          = 24.0f;   /* set to your actual supply voltage */
@@ -686,11 +696,11 @@ void MC_FastLoop_20kHz(void)
 void MC_MotionLoop_1kHz(void)
 {
     /* Stage B2: read the SSI encoder and update the state estimator. */
-    /* Apply live observer tuning + velocity-source selection from the watch window. */
-    s_est_cfg.obs_kp       = g_mc_inject.obs_kp;
-    s_est_cfg.obs_ki       = g_mc_inject.obs_ki;
-    s_est_cfg.obs_kv       = g_mc_inject.obs_kv;
-    s_est_cfg.use_observer = !g_mc_inject.use_finite_diff_velocity;
+    /* Apply observer tuning + velocity-source selection from the OD (0x2500:3-6, GUI-settable + PERSIST). */
+    s_est_cfg.obs_kp       = g_od.est_obs_kp;
+    s_est_cfg.obs_ki       = g_od.est_obs_ki;
+    s_est_cfg.obs_kv       = g_od.est_obs_kv;
+    s_est_cfg.use_observer = (g_od.est_use_observer != 0u);
 
     if (MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample))
     {
@@ -795,14 +805,26 @@ void MC_MotionLoop_1kHz(void)
                     req.start.position_rad             = s_est.mechanical.position_rad - s_home_offset_rad;
                     req.start.velocity_rad_per_s       = 0.0f;
                     req.start.acceleration_rad_per_s2  = 0.0f;
-                    req.target_position_rad            = (float)g_od.target_position * MC_IF_POS_SCALE;
+                    {
+                        float tgt = (float)g_od.target_position * MC_IF_POS_SCALE;
+                        const float lo = g_od.pos_limit_lo_rad, hi = g_od.pos_limit_hi_rad;
+                        if (hi > lo) { if (tgt > hi) { tgt = hi; } else if (tgt < lo) { tgt = lo; } }  /* soft limits (ADR-040) */
+                        req.target_position_rad        = tgt;
+                    }
                     req.target_velocity_rad_per_s      = 0.0f;
                     req.target_acceleration_rad_per_s2 = 0.0f;
                     req.requested_time_s               = (float)g_od.target_position_time_ms * 0.001f;
                     {
-                        const float vmax = (float)g_od.profile_velocity     * MC_IF_VEL_SCALE;
-                        const float amax = (float)g_od.profile_acceleration * MC_IF_ACC_SCALE;
-                        const float dmax = (float)g_od.profile_deceleration * MC_IF_ACC_SCALE;
+                        float vmax = (float)g_od.profile_velocity     * MC_IF_VEL_SCALE;
+                        float amax = (float)g_od.profile_acceleration * MC_IF_ACC_SCALE;
+                        float dmax = (float)g_od.profile_deceleration * MC_IF_ACC_SCALE;
+                        /* Motor safety envelope (ADR-040): clamp the CMC's requested profile to the
+                           motor-owned ceiling (0 = disabled). The motor is the authority here. */
+                        const float ceil_v = g_od.max_velocity_rad_s;
+                        const float ceil_a = g_od.max_accel_rad_s2;
+                        if (ceil_v > 0.001f && vmax > ceil_v) { vmax = ceil_v; }
+                        if (ceil_a > 0.001f && amax > ceil_a) { amax = ceil_a; }
+                        if (ceil_a > 0.001f && dmax > ceil_a) { dmax = ceil_a; }
                         /* Fall back to safe defaults if the profile limits are unset (0): a move then
                            still plans rather than failing INVALID_LIMITS (which would just hold). */
                         req.limits.max_velocity_rad_per_s      = (vmax > 0.001f) ? vmax :  2.0f;
@@ -1029,7 +1051,27 @@ void MC_MotionLoop_1kHz(void)
     {
         if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); s_vel_on = true; }
 
-        const float vdem = s_eff_vel_cmd;
+        /* Motor safety envelope (ADR-040): clamp the velocity demand to the motor-owned ceiling,
+           whatever its source (position cascade, direct velocity, signal generator). 0 = disabled. */
+        float vdem = s_eff_vel_cmd;
+        {
+            const float ceil_v = g_od.max_velocity_rad_s;
+            if (ceil_v > 0.001f)
+            {
+                if      (vdem >  ceil_v) { vdem =  ceil_v; }
+                else if (vdem < -ceil_v) { vdem = -ceil_v; }
+            }
+        }
+        /* Soft position limits (ADR-040): don't drive further past a manually-set limit. lo>=hi = disabled. */
+        {
+            const float lo = g_od.pos_limit_lo_rad, hi = g_od.pos_limit_hi_rad;
+            if (hi > lo)
+            {
+                const float pos_rel = s_est.mechanical.position_rad - s_home_offset_rad;
+                if (pos_rel >= hi && vdem > 0.0f) { vdem = 0.0f; }
+                if (pos_rel <= lo && vdem < 0.0f) { vdem = 0.0f; }
+            }
+        }
         const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
         const float tcorr = MC_VelocityController_Update(&s_vel, &s_vel_cfg, vdem, vact);
 

@@ -119,7 +119,7 @@ void MC_OdStore_LoadDefaults(void)
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;
     g_od.foc_iq_kp = 1.7f;   g_od.foc_iq_ki = 1700.0f;
-    g_od.hb_cur_kp = 5.55f;  g_od.hb_cur_ki = 6300.0f;  /* brushed: test motor R=4.2 L=3.7mH @ wc=1500 (ADR-039) */
+    g_od.hb_cur_bandwidth = 1500.0f;  /* brushed current-loop wc [rad/s]; kp=wc*L, ki=wc*R derived from R/L (ADR-039) */
     g_od.foc_voltage_limit_v = 13.8f;
 
     /* Encoder / estimator */
@@ -129,6 +129,9 @@ void MC_OdStore_LoadDefaults(void)
     g_od.est_use_observer = 1u;
 
     g_od.current_trip_a = 3.0f;
+    g_od.max_velocity_rad_s = 0.0f;   /* motor envelope ceilings (ADR-040): 0 = disabled; set per board */
+    g_od.max_accel_rad_s2   = 0.0f;
+    g_od.pos_limit_lo_rad = 0.0f;  g_od.pos_limit_hi_rad = 0.0f;   /* soft limits off (lo>=hi); set manually (ADR-040) */
 
     /* Electrical-alignment routine defaults (ADR-024). */
     g_od.cal_align_current_a = 1.0f;     /* d-axis align current [A] */

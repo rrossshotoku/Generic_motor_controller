@@ -69,9 +69,10 @@ trip.) Contract: CHANGELOG [4.5.0], additive, no version bump. Scaffolding added
 (PA4) streaming `i_max_a` (`mc_dac`); the armature-current PI tuned from R/L (`kp=ωc·L, ki=ωc·R`); an
 open-loop voltage mode for the current-sign check; and a **current tuning mode** (`test_mode=3`, extends
 ADR-030) that drives the current command from the signal generator (amplitude in A, rate 0 = step pulse). The
-current-loop gains moved to the OD (`0x2400:6/7 hb_cur_kp/ki`, PERSIST, GUI-settable on Motor Config —
-replacing the watch-window seed); the measured armature current is published (`0x2410:6 tlm_i_arm_a`)
-for a live Motor-Config readout + graphing.
+current-loop gains are **derived** from the motor's R/L + a bandwidth knob: `motor_resistance`/`motor_inductance`
+(`0x2000:3/4`, promoted from display-mirrors to applied config) and `hb_cur_bandwidth` (`0x2400:8`, ωc) give
+`kp = ωc·L, ki = ωc·R` — set on Motor Config, with the derived `hb_cur_kp/ki` (`0x2400:6/7`, now RO) and the
+measured armature current (`0x2410:6 tlm_i_arm_a`) shown live for a readout + graphing.
 
 **3. Backend dispatch at the current→PWM seam.** Today the fast loop hard-calls `MC_Foc_Update` →
 `MC_Pwm_SetDutyFast` (`mc_scheduler.c`, MC_FastLoop_20kHz). Introduce a selection on

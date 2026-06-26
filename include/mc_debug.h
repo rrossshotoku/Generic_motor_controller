@@ -101,10 +101,7 @@ typedef struct
     bool  inject_enable;        /**< Master gate: when false, inject fields have no effect. */
     bool  request_offset_cal;   /**< Bench: average N samples at zero current to set ADC offsets (PWM off). */
     bool  request_test_fire;    /**< Fire the loop-tuning signal generator (0x2910 trigger, ADR-030). */
-    bool  use_finite_diff_velocity; /**< Live: true = finite-diff velocity; false = observer (default). */
-    float obs_kp;               /**< Live observer proportional gain (not gated; no drive). */
-    float obs_ki;               /**< Live observer integral gain. */
-    float obs_kv;               /**< Live observer velocity-damping gain. */
+    /* observer gains + velocity-source select moved to the OD (0x2500:3-6, GUI-settable; audit fix). */
 
     /* --- Open-loop drive / alignment (Stage C2; all DRIVE gated by inject_enable above) --- */
     float align_voltage_v;       /**< Commanded d-axis voltage Vd [V] (clamped <= 3 V). */
