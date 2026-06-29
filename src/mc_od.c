@@ -115,6 +115,8 @@ void MC_OdStore_LoadDefaults(void)
     g_od.vel_kd = 0.0f;
     g_od.vel_current_limit_a = 2.5f;
     g_od.vel_load_factor = 1.0f;   /* 0x2300:5 -- no load scaling by default (REQ-0014/ADR-034) */
+    g_od.vel_accel_up = 0.0f;  g_od.vel_accel_dn = 0.0f;   /* 0x2300:6,7 velocity accel ramp off by default (ADR-042) */
+    g_od.vel_accel_jerk = 0.0f;                            /* 0x2300:8 accel ramp-up jerk off (= plain accel ramp) */
 
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;
@@ -126,12 +128,19 @@ void MC_OdStore_LoadDefaults(void)
     g_od.est_electrical_offset_rad = 0.0f;   /* loaded from flash by the persistence store */
     g_od.est_velocity_filter_hz    = 20.0f;
     g_od.est_obs_kp = 40000.0f; g_od.est_obs_ki = 0.0f; g_od.est_obs_kv = 200.0f;
+    g_od.est_obs_filter_alpha = 0.3f;   /* observer output LPF coeff (~57 Hz at 1 kHz); was hardcoded (ADR-003) */
+    /* Stepped-sine current sweep defaults (ADR-047): 5..200 Hz, 5 Hz steps, 0.5 s dwell, 0.2 A AC, no bias. */
+    g_od.freq_sweep_start_hz = 5.0f;  g_od.freq_sweep_end_hz = 200.0f; g_od.freq_sweep_step_hz = 5.0f;
+    g_od.freq_sweep_dwell_s  = 0.5f;  g_od.freq_sweep_bias_a = 0.0f;   g_od.freq_sweep_amplitude_a = 0.2f;
+    /* Current-command notch (ADR-048): off by default, centred 55 Hz / 30 Hz wide (covers ~40-70 Hz). */
+    g_od.notch_enable = 0u;  g_od.notch_freq_hz = 55.0f;  g_od.notch_bandwidth_hz = 30.0f;
     g_od.est_use_observer = 1u;
 
     g_od.current_trip_a = 3.0f;
     g_od.max_velocity_rad_s = 0.0f;   /* motor envelope ceilings (ADR-040): 0 = disabled; set per board */
     g_od.max_accel_rad_s2   = 0.0f;
     g_od.pos_limit_lo_rad = 0.0f;  g_od.pos_limit_hi_rad = 0.0f;   /* soft limits off (lo>=hi); set manually (ADR-040) */
+    g_od.max_jerk_rad_s3 = 500.0f;  g_od.traj_use_scurve = 0u;     /* S-curve planner off by default -> trapezoidal (ADR-045) */
 
     /* Electrical-alignment routine defaults (ADR-024). */
     g_od.cal_align_current_a = 1.0f;     /* d-axis align current [A] */

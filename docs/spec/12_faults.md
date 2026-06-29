@@ -35,7 +35,7 @@ Each fault shall define:
 | 6 | Bus undervoltage | bus voltage < threshold | Recoverable | inhibit motion |
 | 7 | Overtemperature warning | temp > derate threshold | Warning | derate current |
 | 8 | Overtemperature fault | temp > trip threshold | Severe | PWM/current off |
-| 9 | Soft limit reached | position beyond soft limit | Recoverable | stop away/inhibit direction |
+| 9 | Soft limit reached | position at/past a soft limit (when homed) | Recoverable | decelerate to a stop at the limit; motion away always allowed; sets AT_LIMIT status (ADR-040/043) |
 | 10 | FOC voltage saturation | saturated for too long | Warning/recoverable | report or controlled stop |
 | 11 | ADC invalid | current sample invalid | Severe | PWM/current off |
 | 12 | Calibration failed | calibration routine failed | Recoverable | inhibit enable until reset |

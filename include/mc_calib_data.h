@@ -26,7 +26,12 @@ typedef struct
  *  (MC_IF_F_PERSIST) OD entry. The OD entries are serialized by MC_Od_GatherPersistent as
  *  {index(LE16), subindex, len, value} records; @ref od_blob_len bytes are valid. This is the
  *  flash store payload (was bare MC_CalibData_t in v1; MC_PARAM_STORE_VERSION bumped to 2). */
-#define MC_PARAMS_OD_BLOB_MAX (256u)
+/* Capacity for the serialized PERSIST OD records ({index,sub,len,value}; 8 B per F32). MUST stay >=
+   the total of every motor-owned PERSIST entry (~318 B as of ADR-044) -- MC_Od_GatherPersistent
+   SILENTLY drops entries once full, so undersizing loses the highest-index ones (256 dropped
+   0x2600:6/7, 0x2700:3/4, 0x6081-5). Keep sizeof(MC_Params_t) <= MC_PARAM_STORE_MAX_PAYLOAD (512);
+   bump MC_PARAM_STORE_VERSION when this changes. */
+#define MC_PARAMS_OD_BLOB_MAX (448u)
 typedef struct
 {
     MC_CalibData_t calib;                          /**< Calibration (offsets, home, phase order). */

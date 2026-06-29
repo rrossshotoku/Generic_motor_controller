@@ -128,7 +128,7 @@ typedef struct
     float hb_voltage_v;          /**< Open-loop motor voltage command [V] used when hb_open_loop is set. */
     bool  request_factory_reset; /**< Erase the stored calibration (applied when drive is off). */
     float scratch_f;            /**< General-purpose value for early per-module bring-up. */
-    float dac_scale_v_per_a;    /**< Debug DAC (PA4) scale [V/A] for the i_max_a output (default 1 -> 1 A = 1 V). */
+    float dac_scale_v_per_a;    /**< Debug DAC (PA4) scale [V/A] for the |iq| output (default 1 -> 1 A = 1 V). */
 } MC_Inject_t;
 
 /** @brief Live framework snapshot (add to the debugger watch window). */

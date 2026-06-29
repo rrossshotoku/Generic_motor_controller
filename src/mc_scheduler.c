@@ -16,6 +16,9 @@
 #include "mc_velocity_controller.h"
 #include "mc_current_request.h"
 #include "mc_trajectory.h"
+#include "mc_traj_scurve.h" /* jerk-limited S-curve planner, selectable via 0x2600:9 (ADR-045) */
+#include "mc_freq_sweep.h"   /* stepped-sine current sweep for resonance ID, fast-loop injected (ADR-047) */
+#include "mc_notch.h"        /* band-reject on the current command for resonance suppression (ADR-048) */
 #include "mc_position_controller.h"
 #include "mc_signal_gen.h"
 #include "mc_od.h"
@@ -61,7 +64,10 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
                                 re-derives continuous from the absolute encoder each cycle (ADR-037/038) */
 
 /* Stage C2: open-loop drive state. */
-#define MC_C2_VD_MAX 3.0f   /* hard clamp on commanded d-axis voltage [V] */
+#define MC_C2_VD_MAX 12.0f  /* clamp on the open-loop d-axis voltage [V] -- shared by alignment, manual commissioning,
+                               and the plant-ID pulse. ~Vbus/2 SVPWM ceiling at 24 V (duty saturates beyond, OC trip
+                               bounds current). Raised from 3 V for plant ID (ADR-046). */
+#define MC_DQ_TEST_MAX_MS 10000u  /* d-axis plant-ID max dwell / auto-disarm backstop [ms] @ 1 kHz arbitration (ADR-046) */
 static bool s_oc_trip;      /* latched over-current trip */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
@@ -103,6 +109,9 @@ static float                         s_pos_hold_rad;      /* held position when 
 
 /* Loop-tuning test-signal overlay (ADR-030): an on-motor generator drives the selected loop's reference. */
 static MC_SignalGen_t                s_sig_gen;
+static MC_FreqSweep_t                s_freq_sweep;         /* stepped-sine current sweep (ADR-047) */
+static MC_Notch_t                    s_iq_notch;           /* current-command notch (ADR-048) */
+static float                         s_notch_last_f0 = -1.0f, s_notch_last_bw = -1.0f;  /* coeff-recompute guard */
 static uint8_t                       s_sig_loop;           /* latched target loop while active (MC_IF_TEST_MODE_*) */
 static float                         s_sig_value;          /* generator output this medium tick */
 static float                         s_pos_tune_entry_rad; /* position captured when position-tuning fires (home-relative) */
@@ -119,6 +128,7 @@ static volatile float s_eff_vel_cmd;      /* velocity demand [rad/s] */
 static volatile bool  s_eff_align;        /* commissioning open-loop align active */
 static volatile float s_eff_align_v;      /* open-loop d-axis voltage [V] */
 static volatile float s_eff_align_angle;  /* open-loop electrical angle [rad] */
+static uint32_t       s_dq_test_ticks;    /* d-axis plant-ID arm-time counter (auto-disarm, ADR-046) */
 
 /* Gather the full parameter set -- calibration + every persistent OD entry (gains/config) -- and
    latch a flash save (written by the slow loop when the power stage is off). See ADR-010/023. */
@@ -150,6 +160,95 @@ static void params_save(void)
 /* Apply OD gains (g_od, written via the dictionary) to the live controller configs. Runs in the
    slow loop = a safe update point. Observer gains and the electrical offset stay on the
    watch-window / alignment paths for now (see ADR-015). */
+/* --- Velocity-demand acceleration ramp (jerk-limited slew, ADR-042) ------------------------------
+   Ramps the PROFILE_VELOCITY demand (the joystick path) toward the setpoint under an acceleration cap,
+   where the acceleration itself eases IN (jerk-limited on the way UP to the cap) but cuts off FREELY on
+   the way DOWN. That asymmetry is what makes it stable: the acceleration can always fall in time to land
+   the velocity on the setpoint (no overshoot), while the soft rise removes the start kick. The position
+   cascade and the tuning generator bypass it. Runs at the medium-loop rate.
+     - accel_up [rad/s^2]  : max acceleration while speeding up (|v| growing); accel_dn while slowing down.
+                             0 disables the limiter for that phase (pass-through).
+     - accel_jerk [rad/s^3]: how fast the acceleration ramps UP to the cap (shared). 0 = step (no soft rise).
+                             The down direction has no knob -- the acceleration magnitude falls without limit. */
+static float s_vel_accel_up;     /* 0x2300:6 [rad/s^2] -- applied from the OD in od_apply_gains */
+static float s_vel_accel_dn;     /* 0x2300:7 [rad/s^2] */
+static float s_vel_accel_jerk;   /* 0x2300:8 [rad/s^3] -- accel ramp-up rate (0 = step) */
+static float s_slew_vel_prev;    /* limiter state: last output velocity demand [rad/s] */
+static float s_slew_acc_prev;    /* limiter state: last applied acceleration [rad/s^2] */
+
+static void vel_slew_reset(float vel)
+{
+    s_slew_vel_prev = vel;
+    s_slew_acc_prev = 0.0f;
+}
+
+static float vel_slew_limit(float vel_in)
+{
+    const float dt   = MC_MOTION_DT_S;
+    const float alim = (fabsf(vel_in) >= fabsf(s_slew_vel_prev)) ? s_vel_accel_up : s_vel_accel_dn;
+
+    if (alim <= 0.0f)                       /* limiter disabled for this phase -> pass-through */
+    {
+        s_slew_vel_prev = vel_in;
+        s_slew_acc_prev = 0.0f;
+        return vel_in;
+    }
+
+    /* Acceleration to land exactly on the demand this tick, capped at the phase's max acceleration. */
+    float acc_target = (vel_in - s_slew_vel_prev) / dt;
+    if      (acc_target >  alim) { acc_target =  alim; }
+    else if (acc_target < -alim) { acc_target = -alim; }
+
+    /* Move the applied acceleration toward acc_target: its magnitude may RISE by <= jerk*dt per tick,
+       but may FALL without limit -- the asymmetry that prevents overshoot. jerk <= 0 => step to target. */
+    const float acc_prev = s_slew_acc_prev;
+    float acc;
+    if (s_vel_accel_jerk <= 0.0f)
+    {
+        acc = acc_target;                                       /* no soft rise: step to the capped target */
+    }
+    else
+    {
+        const float jerk_dt = s_vel_accel_jerk * dt;
+        if (acc_target * acc_prev < 0.0f)                       /* sign flip: fall to 0 free, then limited rise */
+        {
+            acc = (acc_target >  jerk_dt) ?  jerk_dt
+                : (acc_target < -jerk_dt) ? -jerk_dt
+                :  acc_target;
+        }
+        else                                                    /* same side of 0 (or rising from 0) */
+        {
+            const float mag_prev = fabsf(acc_prev);
+            if (fabsf(acc_target) > mag_prev + jerk_dt)         /* rising magnitude: jerk-limit the rise */
+            {
+                acc = (acc_target >= 0.0f) ? (mag_prev + jerk_dt) : -(mag_prev + jerk_dt);
+            }
+            else                                                /* falling, or rising within budget: take it */
+            {
+                acc = acc_target;
+            }
+        }
+    }
+
+    float vel_out = s_slew_vel_prev + acc * dt;
+
+    /* Backstop: never cross the demand (a capped accel can't, but a ramp-in from a stale state might). */
+    if (vel_in >= s_slew_vel_prev) { if (vel_out > vel_in) { vel_out = vel_in; } }
+    else                           { if (vel_out < vel_in) { vel_out = vel_in; } }
+
+    s_slew_acc_prev = (vel_out - s_slew_vel_prev) / dt;         /* acceleration actually applied */
+    s_slew_vel_prev = vel_out;
+    return vel_out;
+}
+
+/* Soft position limits are home-relative, so they're meaningless until the mechanical zero is set.
+   Active = a real band (lo<hi) AND the zero captured. s_home_offset_rad != 0 is the same "mech zero
+   done" signal as MC_IF_CAL_DONE_MECH_ZERO (the cal_done bitfield, ADR-040/043). */
+static bool pos_limits_active(void)
+{
+    return (g_od.pos_limit_hi_rad > g_od.pos_limit_lo_rad) && (s_home_offset_rad != 0.0f);
+}
+
 static void od_apply_gains(void)
 {
     const float kt   = g_od.motor_kt_nm_per_a;
@@ -164,6 +263,9 @@ static void od_apply_gains(void)
         s_vel_cfg.pid.ki = g_od.vel_ki * lf;
     }
     s_vel_cfg.pid.kd = g_od.vel_kd;
+    s_vel_accel_up   = g_od.vel_accel_up;   /* velocity-demand acceleration ramp (0x2300:6/7/8, ADR-042) */
+    s_vel_accel_dn   = g_od.vel_accel_dn;
+    s_vel_accel_jerk = g_od.vel_accel_jerk;
     s_vel_cfg.pid.output_min     = -tlim;  s_vel_cfg.pid.output_max     = tlim;
     s_vel_cfg.pid.integrator_min = -tlim;  s_vel_cfg.pid.integrator_max = tlim;
     s_vel_cfg.torque_output_limit_nm = tlim;
@@ -205,6 +307,11 @@ static void od_apply_gains(void)
     }
 
     s_est_cfg.velocity_filter_hz = g_od.est_velocity_filter_hz;
+    if ((g_od.notch_freq_hz != s_notch_last_f0) || (g_od.notch_bandwidth_hz != s_notch_last_bw))
+    {   /* recompute the current-command notch coefficients only when the band changes (ADR-048) */
+        MC_Notch_SetParams(&s_iq_notch, g_od.notch_freq_hz, g_od.notch_bandwidth_hz, 1.0f / MC_MOTION_DT_S);
+        s_notch_last_f0 = g_od.notch_freq_hz; s_notch_last_bw = g_od.notch_bandwidth_hz;
+    }
     /* current_trip stays on the watch-window inject path during bring-up (read-reflected in
        od_mirror_live), to avoid a two-writer conflict. */
 }
@@ -253,8 +360,9 @@ static void od_mirror_live(void)
             ms |= MC_IF_MOVE_MOVING;
         }
         if (g_mc_debug.target_reached) { ms |= MC_IF_MOVE_ON_TARGET; }
-        /* Soft position limits (ADR-040): flag AT_LIMIT_LO/HI when at/past a manually-set limit. lo>=hi = off. */
-        if (g_od.pos_limit_hi_rad > g_od.pos_limit_lo_rad)
+        /* Soft position limits (ADR-040/043): flag AT_LIMIT_LO/HI when at/past a manually-set limit.
+           Gated on pos_limits_active() = a real band AND the mechanical zero set (home-relative). */
+        if (pos_limits_active())
         {
             const float pos_rel = s_est.mechanical.position_rad - s_home_offset_rad;
             if (pos_rel <= g_od.pos_limit_lo_rad) { ms |= MC_IF_MOVE_AT_LIMIT_LO; }
@@ -286,7 +394,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 51u;   /* build/version marker (ADR-038/039/040): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 64u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -408,6 +516,8 @@ void MC_Framework_Init(void)
     MC_PositionController_Init(&s_pos_ctl);
     MC_Trajectory_Init(&s_traj);
     MC_SignalGen_Init(&s_sig_gen);
+    MC_FreqSweep_Init(&s_freq_sweep);
+    MC_Notch_Init(&s_iq_notch);
 
     /* Object dictionary: seed defaults (its gains match the configs seeded above). */
     MC_Od_Init();
@@ -634,8 +744,27 @@ void MC_FastLoop_20kHz(void)
 
         MC_FocCurrentCommand_t cmd;
         cmd.id_a   = s_eff_id_cmd;
-        /* Torque mode: direct iq. Velocity mode: iq from the medium-loop velocity cascade. */
-        cmd.iq_a   = s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published;
+        /* Frequency-sweep current injection (ADR-047): edge-detect freq_sweep_enable, then in torque mode
+           override iq with bias + amplitude*sin generated HERE at the fast rate (clean to ~200 Hz). */
+        {
+            static bool s_sweep_prev_en = false;
+            const bool en = (g_od.freq_sweep_enable != 0u);
+            if (en && !s_sweep_prev_en)
+            {
+                MC_FreqSweep_Start(&s_freq_sweep, g_od.freq_sweep_start_hz, g_od.freq_sweep_end_hz,
+                                   g_od.freq_sweep_step_hz, g_od.freq_sweep_dwell_s,
+                                   g_od.freq_sweep_bias_a, g_od.freq_sweep_amplitude_a);
+            }
+            else if (!en && MC_FreqSweep_Active(&s_freq_sweep))
+            {
+                MC_FreqSweep_Stop(&s_freq_sweep);
+            }
+            s_sweep_prev_en = en;
+        }
+        /* Torque mode: direct iq (or the sweep). Velocity mode: iq from the medium-loop velocity cascade. */
+        cmd.iq_a   = (MC_FreqSweep_Active(&s_freq_sweep) && s_eff_torque_mode)
+                     ? MC_FreqSweep_Sample(&s_freq_sweep, MC_FAST_DT_S)
+                     : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published);
         cmd.enable = true;
 
         const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
@@ -688,9 +817,27 @@ void MC_FastLoop_20kHz(void)
     }
     g_mc_debug.overcurrent_trip = s_oc_trip;
 
-    /* Debug DAC (PA4 / DAC1_OUT1): mirror i_max_a to the scope, scaled by dac_scale_v_per_a (default
-       1 V/A -> 1 A = 1 V), clamped to 0..Vref. Output saturates at ~3.3 A with the default scale. */
-    MC_Dac_SetVolts(g_mc_debug.i_max_a * g_mc_inject.dac_scale_v_per_a);
+    /* Debug DAC (PA4 / DAC1_OUT1): output the signal selected by dac_source (0x2900:5), scaled by
+       dac_scale_v_per_a (default 1 V/A -> 1 A = 1 V), clamped to 0..Vref. The DAC is unipolar, so signed
+       signals (iq/id/ia/...) clip below 0 -- use the |.| options, or keep the signal positive (e.g. id
+       during a d-axis voltage step). */
+    {
+        float dac_sig;
+        switch (g_od.dac_source)
+        {
+            case 1:  dac_sig = g_mc_debug.iq_meas_a;        break;  /* iq (signed) */
+            case 2:  dac_sig = fabsf(g_mc_debug.id_meas_a); break;  /* |id| */
+            case 3:  dac_sig = g_mc_debug.id_meas_a;        break;  /* id (signed) */
+            case 4:  dac_sig = g_mc_debug.ia_a;             break;  /* phase A (= id at the forced angle 0) */
+            case 5:  dac_sig = g_mc_debug.ib_a;             break;  /* phase B */
+            case 6:  dac_sig = g_mc_debug.ic_a;             break;  /* phase C */
+            case 7:  dac_sig = g_mc_debug.i_max_a;          break;  /* max |phase| */
+            case 8:  dac_sig = g_mc_debug.i_arm_a;          break;  /* brushed armature */
+            case 0:
+            default: dac_sig = fabsf(g_mc_debug.iq_meas_a); break;  /* |iq| (default) */
+        }
+        MC_Dac_SetVolts(dac_sig * g_mc_inject.dac_scale_v_per_a);
+    }
 }
 
 void MC_MotionLoop_1kHz(void)
@@ -700,6 +847,7 @@ void MC_MotionLoop_1kHz(void)
     s_est_cfg.obs_kp       = g_od.est_obs_kp;
     s_est_cfg.obs_ki       = g_od.est_obs_ki;
     s_est_cfg.obs_kv       = g_od.est_obs_kv;
+    s_est_cfg.obs_filter_alpha = g_od.est_obs_filter_alpha;   /* observer output LPF, live-tunable (0x2500:7, ADR-003) */
     s_est_cfg.use_observer = (g_od.est_use_observer != 0u);
 
     if (MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample))
@@ -772,14 +920,46 @@ void MC_MotionLoop_1kHz(void)
             s_eff_vel_cmd     = g_mc_inject.velocity_cmd_rad_s;
             g_od.statusword   = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
                                          | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
+            s_dq_test_ticks = 0u;
+        }
+        else if (g_od.dq_test_enable)
+        {
+            /* GUI-fired open-loop d-axis voltage step for plant ID (ADR-046): open-loop Vd at a fixed
+               electrical angle, no current loop. The align path clamps Vd to +/-MC_C2_VD_MAX and the OC
+               trip still protects. Pulse: hold Vd for dq_test_dwell_ms, then auto-return to 0 and disarm
+               (dwell clamped to MC_DQ_TEST_MAX_MS as a backstop). This path overrides the remote enable,
+               so the motor is live regardless of the axis_manager. */
+            uint32_t dwell_ms = (g_od.dq_test_dwell_ms == 0u) ? 1u : (uint32_t)g_od.dq_test_dwell_ms;
+            if (dwell_ms > MC_DQ_TEST_MAX_MS) { dwell_ms = MC_DQ_TEST_MAX_MS; }
+            const bool dwell_done = (++s_dq_test_ticks > dwell_ms);  /* 1 tick = 1 ms (1 kHz arbitration) */
+            if (dwell_done) { g_od.dq_test_enable = 0u; }            /* dwell elapsed -> pulse back to 0 */
+            s_eff_align         = (!dwell_done) && (fabsf(g_od.dq_test_voltage_v) > 1e-3f);
+            s_eff_align_v       = dwell_done ? 0.0f : g_od.dq_test_voltage_v;
+            s_eff_align_angle   = g_od.dq_test_angle_rad;
+            s_eff_drive         = false;
+            s_eff_torque_mode   = false;
+            s_eff_position_mode = false;
+            s_eff_halt          = false;
+            s_eff_iq_cmd        = 0.0f;
+            s_eff_id_cmd        = 0.0f;
+            s_eff_vel_cmd       = 0.0f;
+            g_od.statusword     = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
+                                           | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
         }
         else
         {
             /* Remote: the mode manager (OD/CiA-402) drives. Boot-safe (controlword 0 = Disabled). */
+            s_dq_test_ticks = 0u;
             s_eff_align = false;
             s_eff_drive = ds.operation_enabled;
             const bool halt_rise = (ds.active_mode == MC_MODE_POSITION_HOLD) && !s_eff_halt;
             s_eff_halt = (ds.active_mode == MC_MODE_POSITION_HOLD);
+            /* Jerk limiter (ADR-042): hold it at the live velocity unless PROFILE_VELOCITY is the active
+               driven mode, so entering velocity mode is bump-free (the position cascade bypasses it). */
+            if (!(s_eff_drive && ds.active_mode == MC_MODE_PROFILE_VELOCITY))
+            {
+                vel_slew_reset(s_est.mechanical.velocity_rad_per_s);
+            }
             if (ds.active_mode == MC_MODE_TORQUE_CURRENT)
             {
                 s_eff_torque_mode   = true;
@@ -791,7 +971,7 @@ void MC_MotionLoop_1kHz(void)
             {
                 s_eff_torque_mode   = false;
                 s_eff_position_mode = false;
-                s_eff_vel_cmd       = dc.target_velocity_rad_per_s;   /* = cyclic velocity_setpoint (v3) */
+                s_eff_vel_cmd       = vel_slew_limit(dc.target_velocity_rad_per_s);   /* cyclic velocity_setpoint, accel-ramp limited (ADR-042) */
             }
             else if (ds.active_mode == MC_MODE_PROFILE_POSITION)
             {
@@ -807,8 +987,12 @@ void MC_MotionLoop_1kHz(void)
                     req.start.acceleration_rad_per_s2  = 0.0f;
                     {
                         float tgt = (float)g_od.target_position * MC_IF_POS_SCALE;
-                        const float lo = g_od.pos_limit_lo_rad, hi = g_od.pos_limit_hi_rad;
-                        if (hi > lo) { if (tgt > hi) { tgt = hi; } else if (tgt < lo) { tgt = lo; } }  /* soft limits (ADR-040) */
+                        if (pos_limits_active())   /* clamp the target into the soft-limit band (ADR-040/043) */
+                        {
+                            const float lo = g_od.pos_limit_lo_rad, hi = g_od.pos_limit_hi_rad;
+                            if      (tgt > hi) { tgt = hi; }
+                            else if (tgt < lo) { tgt = lo; }
+                        }
                         req.target_position_rad        = tgt;
                     }
                     req.target_velocity_rad_per_s      = 0.0f;
@@ -831,9 +1015,11 @@ void MC_MotionLoop_1kHz(void)
                         req.limits.max_acceleration_rad_per_s2 = (amax > 0.001f) ? amax : 10.0f;
                         req.limits.max_deceleration_rad_per_s2 = (dmax > 0.001f) ? dmax : 10.0f;
                     }
-                    req.limits.max_jerk_rad_per_s3         = 0.0f;
+                    req.limits.max_jerk_rad_per_s3         = g_od.max_jerk_rad_s3;   /* S-curve planner (ADR-045); the trapezoid ignores it */
                     MC_PositionController_Reset(&s_pos_ctl);
-                    (void)MC_Trajectory_Start(&s_traj, &req);
+                    /* Select the planner per 0x2600:9 (ADR-045). Both fill s_traj; the sampler is shared. */
+                    (void)(g_od.traj_use_scurve ? MC_TrajScurve_Plan(&s_traj, &req)
+                                                : MC_Trajectory_Start(&s_traj, &req));
                 }
             }
             else if (ds.active_mode == MC_MODE_POSITION_HOLD)
@@ -976,6 +1162,8 @@ void MC_MotionLoop_1kHz(void)
         }
         g_od.test_active = MC_SignalGen_Active(&s_sig_gen) ? 1u : 0u;
         g_od.test_signal = s_sig_value;   /* 0x2910:8 PDO -- the generator output, for graphing */
+        g_od.freq_sweep_current_hz = MC_FreqSweep_CurrentHz(&s_freq_sweep);  /* 0x2920:8 RO PDO (ADR-047) */
+        g_od.freq_sweep_active     = MC_FreqSweep_Active(&s_freq_sweep) ? 1u : 0u;  /* 0x2920:9 RO */
     }
 
     /* Stage D3: position cascade (ADR-028). In PROFILE_POSITION, advance the trajectory and run the
@@ -1049,7 +1237,7 @@ void MC_MotionLoop_1kHz(void)
     const bool vel_active = s_eff_drive && !s_eff_torque_mode && !s_oc_trip;
     if (vel_active)
     {
-        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); s_vel_on = true; }
+        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); MC_Notch_Reset(&s_iq_notch); s_vel_on = true; }
 
         /* Motor safety envelope (ADR-040): clamp the velocity demand to the motor-owned ceiling,
            whatever its source (position cascade, direct velocity, signal generator). 0 = disabled. */
@@ -1062,14 +1250,34 @@ void MC_MotionLoop_1kHz(void)
                 else if (vdem < -ceil_v) { vdem = -ceil_v; }
             }
         }
-        /* Soft position limits (ADR-040): don't drive further past a manually-set limit. lo>=hi = disabled. */
+        /* Soft position limits (ADR-043, refining ADR-040): taper the velocity demand so it lands AT a
+           manually-set limit at zero speed instead of slamming/overshooting; never restrict motion AWAY
+           from a limit, so you can always drive out of the zone. Decel budget = the envelope max_accel
+           (0x2600:5); with it off (0) we fall back to a hard stop at the limit. Active only when homed. */
+        if (pos_limits_active())
         {
             const float lo = g_od.pos_limit_lo_rad, hi = g_od.pos_limit_hi_rad;
-            if (hi > lo)
+            const float pos_rel = s_est.mechanical.position_rad - s_home_offset_rad;
+            const float adec    = g_od.max_accel_rad_s2;        /* 0 => hard-stop fallback */
+            if (vdem > 0.0f)                                     /* heading toward the hi limit */
             {
-                const float pos_rel = s_est.mechanical.position_rad - s_home_offset_rad;
-                if (pos_rel >= hi && vdem > 0.0f) { vdem = 0.0f; }
-                if (pos_rel <= lo && vdem < 0.0f) { vdem = 0.0f; }
+                const float d = hi - pos_rel;
+                if (d <= 0.0f) { vdem = 0.0f; }                 /* at/past hi: stop further; away is untouched */
+                else if (adec > 0.001f)
+                {
+                    const float v_allow = sqrtf(2.0f * adec * d);
+                    if (vdem > v_allow) { vdem = v_allow; }      /* decel taper -> 0 at hi */
+                }
+            }
+            else if (vdem < 0.0f)                                /* heading toward the lo limit */
+            {
+                const float d = pos_rel - lo;
+                if (d <= 0.0f) { vdem = 0.0f; }
+                else if (adec > 0.001f)
+                {
+                    const float v_allow = sqrtf(2.0f * adec * d);
+                    if (vdem < -v_allow) { vdem = -v_allow; }
+                }
             }
         }
         const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
@@ -1080,7 +1288,8 @@ void MC_MotionLoop_1kHz(void)
             MC_CurrentRequest_Update(&s_torque_cfg, tcorr, s_accel_ff_rad_s2 /* trajectory accel FF (D3) */, vact, true, &crd);
         MC_FocCurrentCommand_t fcmd = MC_CurrentRequest_ToFocCommand(&s_torque_cfg, &treq);
 
-        s_iq_cmd_published = fcmd.iq_a;
+        const float iq_notched = MC_Notch_Update(&s_iq_notch, fcmd.iq_a);   /* current-command notch (ADR-048) */
+        s_iq_cmd_published = g_od.notch_enable ? iq_notched : fcmd.iq_a;
         g_mc_debug.vel_demand_rad_s  = vdem;
         g_mc_debug.vel_torque_cmd_nm = treq.torque_nm;
         g_mc_debug.vel_iq_cmd_a      = fcmd.iq_a;

@@ -63,10 +63,18 @@ defaults (no migration initially).
 The live module configs must be reachable by capture/apply, so they move to a small axis/config
 registry (currently statics in `mc_scheduler`).
 
-## First implementation (calibration-only, ADR-010 Resolution)
+## Implementation (ADR-023, extended in ADR-044)
 
-Shipped now: the generic A/B store + a **calibration-only** payload (`MC_CalibData_t`: electrical
-offset, current offsets, mechanical zero, phase order). NV region = bank 2 pages 126/127
-(0x0807F000/0x0807F800), reserved in the linker. Alignment capture auto-latches a save; the slow
-loop writes it when the power stage is off; boot reloads and applies it. The full-params blob
-(gains/limits/motor/board) and the config registry are the next persistence increment.
+The flash payload is `MC_Params_t` = the calibration subset (`MC_CalibData_t`: electrical offset,
+current offsets, mechanical zero, phase order) **plus a serialized blob of every PERSIST OD entry**
+(gains / limits / motor model / board), gathered by `MC_Od_GatherPersistent` as
+`{index, sub, len, value}` records and restored by `MC_Od_RestorePersistent` into `g_od`. NV region =
+bank 2 pages 126/127 (0x0807F000/0x0807F800), reserved in the linker. Alignment capture and the OD
+save command (`0x2800:1`) latch a save; the slow loop writes it when the power stage is off; boot
+reloads and applies it.
+
+The blob buffer is `MC_PARAMS_OD_BLOB_MAX` = **448 B** (ADR-044). It MUST stay ≥ the total PERSIST
+size (~318 B currently): `MC_Od_GatherPersistent` **silently drops** entries past the cap — at the old
+256 B it truncated `0x2600:6/7`, `0x2700:3/4`, and `0x6081-5`. Re-check the cap (and keep
+`sizeof(MC_Params_t) ≤ MC_PARAM_STORE_MAX_PAYLOAD`) and bump `MC_PARAM_STORE_VERSION` when adding
+PERSIST entries.

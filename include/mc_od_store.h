@@ -21,6 +21,8 @@ typedef struct
     float    vel_kp, vel_ki, vel_kd;                 /* 0x2300 */
     float    vel_current_limit_a;                    /* 0x2300:4 */
     float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */
+    float    vel_accel_up, vel_accel_dn;             /* 0x2300:6,7 velocity-demand accel ramp caps [rad/s^2] (ADR-042) */
+    float    vel_accel_jerk;                         /* 0x2300:8 accel ramp-up jerk [rad/s^3]; 0 = step (ADR-042) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
     float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed PI gains -- DERIVED, RO (ADR-039) */
     float    hb_cur_bandwidth;                       /* 0x2400:8 brushed current-loop bandwidth wc [rad/s] */
@@ -28,16 +30,24 @@ typedef struct
     float    est_velocity_filter_hz;                 /* 0x2500:2 */
     float    est_obs_kp, est_obs_ki, est_obs_kv;     /* 0x2500:3..5 */
     uint8_t  est_use_observer;                       /* 0x2500:6 */
+    float    est_obs_filter_alpha;                   /* 0x2500:7 observer output LPF coeff (0..1); ~57 Hz at 0.3 (ADR-003) */
     float    current_trip_a;                         /* 0x2600:2 */
     float    max_velocity_rad_s;                     /* 0x2600:4 motor safety envelope -- vel ceiling (ADR-040) */
     float    max_accel_rad_s2;                       /* 0x2600:5 motor safety envelope -- accel ceiling (ADR-040) */
     float    pos_limit_lo_rad, pos_limit_hi_rad;     /* 0x2600:6,7 soft position limits, home-rel (ADR-040; lo>=hi=off) */
+    float    max_jerk_rad_s3;                        /* 0x2600:8 fixed jerk for the S-curve planner [rad/s^3] (ADR-045) */
+    uint8_t  traj_use_scurve;                        /* 0x2600:9 1 = jerk-limited S-curve, 0 = trapezoidal (ADR-045) */
     float    motor_kt_nm_per_a, motor_inertia_kg_m2; /* 0x2000:1,2 */
     uint16_t motor_pole_pairs;                       /* 0x2000:5 */
     uint8_t  motor_backend_sel;                      /* 0x2000:6 (0=BLDC/FOC, 1=brushed H-bridge; ADR-039) */
 
     /* --- Commands (RW; placeholders until wired to mode manager / inject path) --- */
     uint8_t  inject_enable, inject_target, inject_step_trigger; /* 0x2900 */
+    uint8_t  dac_source;                             /* 0x2900:5 debug DAC (PA4) source: 0=|iq|..8=i_arm */
+    float    dq_test_voltage_v;                      /* 0x2900:6 d-axis plant-ID open-loop voltage [V] (ADR-046) */
+    float    dq_test_angle_rad;                      /* 0x2900:7 d-axis plant-ID electrical angle [rad] (ADR-046) */
+    uint8_t  dq_test_enable;                         /* 0x2900:8 d-axis plant-ID arm (1=fire pulse); auto-disarms (ADR-046) */
+    uint16_t dq_test_dwell_ms;                       /* 0x2900:9 d-axis plant-ID pulse dwell [ms]; then back to 0 (ADR-046) */
     float    inject_step_amplitude;
     /* --- 0x2910 loop-tuning test-signal overlay (ADR-030) --- */
     uint8_t  test_mode;              /* 0x2910:1 (MC_IF_TEST_MODE_*) */
@@ -50,6 +60,16 @@ typedef struct
     float    test_signal;            /* 0x2910:8 RO PDO -- raw signal-generator output (graphable) */
     float    test_pause_s;           /* 0x2910:9 -- inter-pulse pause [s] (continuous mode) */
     float    test_max_accel;         /* 0x2910:10 -- position-tuning accel limit [rad/s^2]; 0 = off (ADR-032) */
+    /* --- 0x2920 stepped-sine current sweep for resonance ID (ADR-047) --- */
+    float    freq_sweep_start_hz, freq_sweep_end_hz, freq_sweep_step_hz;      /* 0x2920:1-3 [Hz] */
+    float    freq_sweep_dwell_s, freq_sweep_bias_a, freq_sweep_amplitude_a;   /* 0x2920:4-6 [s],[A],[A] */
+    uint8_t  freq_sweep_enable;      /* 0x2920:7 (1 = run) */
+    float    freq_sweep_current_hz;  /* 0x2920:8 RO PDO -- frequency being injected now */
+    uint8_t  freq_sweep_active;      /* 0x2920:9 RO */
+    /* --- 0x2930 current-command notch filter (resonance suppression, ADR-048) --- */
+    uint8_t  notch_enable;           /* 0x2930:1 on/off */
+    float    notch_freq_hz;          /* 0x2930:2 notch centre [Hz] */
+    float    notch_bandwidth_hz;     /* 0x2930:3 notch -3 dB bandwidth [Hz] */
     uint16_t cal_command;                            /* 0x2700:1 */
     float    cal_align_current_a;                     /* 0x2700:3 electrical-align current [A] (PERSIST) */
     uint16_t cal_align_hold_ms;                       /* 0x2700:4 electrical-align hold [ms] (PERSIST) */
