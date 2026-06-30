@@ -117,7 +117,7 @@ void MC_OdStore_LoadDefaults(void)
     g_od.vel_load_factor = 1.0f;   /* 0x2300:5 -- no load scaling by default (REQ-0014/ADR-034) */
     g_od.vel_accel_up = 0.0f;  g_od.vel_accel_dn = 0.0f;   /* 0x2300:6,7 velocity accel ramp off by default (ADR-042) */
     g_od.vel_accel_jerk = 0.0f;                            /* 0x2300:8 accel ramp-up jerk off (= plain accel ramp) */
-    g_od.holding_current_a = 1.0f;                         /* 0x2300:9 default >0 = always hold; set 0 to release after settle (ADR-054) */
+    g_od.holding_enable = 1u;                              /* 0x2300:9 default 1 = always hold; set 0 to release after settle (ADR-054) */
 
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;

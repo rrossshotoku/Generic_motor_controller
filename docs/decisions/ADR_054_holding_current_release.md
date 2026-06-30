@@ -12,9 +12,10 @@ wants an option to drop the holding current to zero after the axis has settled.
 
 ## Decision
 
-New OD entry `0x2300:9 holding_current_a` (F32, RW, PERSIST), **binary** semantics for v1:
-- `> 0` (default 1.0): always hold (present behavior).
-- `= 0`: **release**. In velocity mode, once the demand is ~0 (commanded zero) **AND** the actual
+New OD entry `0x2300:9 holding_enable` (U8, RW, PERSIST) — a **boolean**, not a current value (the PI
+controller provides whatever holding current is needed; this just turns holding on/off):
+- `1` (default): always hold (present behavior).
+- `0`: **release**. In velocity mode, once the demand is ~0 (commanded zero) **AND** the actual
   velocity is below `MC_HOLD_SETTLED_EPS` (0.1 rad/s) continuously for `MC_HOLD_RELEASE_TICKS`
   (1000 ms @ 1 kHz), the velocity stage forces `s_iq_cmd_published = 0` and **resets the velocity
   controller** (parks the integrator → no drift-windup). It stays released until a non-zero command,

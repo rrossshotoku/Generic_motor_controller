@@ -403,7 +403,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 71u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 74u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -1247,6 +1247,7 @@ void MC_MotionLoop_1kHz(void)
 
         float p_dem, v_ff, a_ff;
         bool  complete;
+        bool  at_cmd_target = true;   /* cleared for an abandoned/manual hold (post-jog) so on-target/on-shot isn't reported there (ADR-056) */
         if (s_eff_halt)
         {
             /* HALT hold (ADR-035): hold at the position captured when HALT engaged (move abandoned
@@ -1275,7 +1276,11 @@ void MC_MotionLoop_1kHz(void)
             }
             else
             {
+                /* No active plan (idle, or the plan was abandoned on a velocity-mode jog, ADR-056): hold the
+                   latched position, but this is NOT a commanded target -- so don't report on-target/on-shot
+                   here. The CMC's target was the recalled position, not a manual trim. */
                 p_dem = s_pos_hold_rad; v_ff = 0.0f; a_ff = 0.0f; complete = true;
+                at_cmd_target = false;
             }
         }
 
@@ -1284,7 +1289,7 @@ void MC_MotionLoop_1kHz(void)
         s_accel_ff_rad_s2 = a_ff;             /* -> torque request inertia slot */
 
         const float perr = s_pos_ctl.position_error_rad;
-        const bool reached = complete && (perr < MC_POS_TARGET_WINDOW_RAD) && (perr > -MC_POS_TARGET_WINDOW_RAD);
+        const bool reached = complete && at_cmd_target && (perr < MC_POS_TARGET_WINDOW_RAD) && (perr > -MC_POS_TARGET_WINDOW_RAD);
         if (reached) { g_od.statusword |= MC_IF_SW_TARGET_REACHED; }
 
         g_mc_debug.pos_demand_rad = p_dem;
@@ -1294,6 +1299,11 @@ void MC_MotionLoop_1kHz(void)
     }
     else
     {
+        /* Leaving position mode (e.g. a velocity-mode joystick trim): abandon the plan so a later
+           re-entry HOLDS THE CURRENT position, not the old target. Without this the completed trajectory
+           stays active@target (MC_Trajectory_Evaluate keeps returning valid@target) and drives back on
+           return; a fresh move still needs a new setpoint. (ADR-056) */
+        if (s_pos_on) { s_traj.active = false; }
         s_pos_on          = false;
         s_accel_ff_rad_s2 = 0.0f;
         g_mc_debug.target_reached = false;
@@ -1349,13 +1359,13 @@ void MC_MotionLoop_1kHz(void)
         }
         const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
 
-        /* Holding-current release (ADR-054): with holding_current_a == 0, once the axis is commanded to
+        /* Holding-current release (ADR-054): with holding_enable == 0, once the axis is commanded to
            zero AND has settled at ~zero velocity for ~1 s, cut the current demand to 0 and park the
            velocity integrator (anti-windup). Stays released until a non-zero command, so a back-drivable
            axis can't hunt (release->drift->re-engage); resume is bumpless from the reset state. Only safe
            where the mechanism self-holds (e.g. a self-locking leadscrew) -- it will drift if back-drivable. */
         const bool cmd_zero = (fabsf(vdem) < 1e-3f);
-        if ((g_od.holding_current_a > 0.0f) || !cmd_zero)
+        if ((g_od.holding_enable != 0u) || !cmd_zero)
         {
             s_hold_released = false;
             s_hold_settle_ticks = 0u;
