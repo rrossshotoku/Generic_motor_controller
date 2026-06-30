@@ -19,6 +19,7 @@
 #include "mc_traj_scurve.h" /* jerk-limited S-curve planner, selectable via 0x2600:9 (ADR-045) */
 #include "mc_freq_sweep.h"   /* stepped-sine current sweep for resonance ID, fast-loop injected (ADR-047) */
 #include "mc_notch.h"        /* band-reject on the current command for resonance suppression (ADR-048) */
+#include "mc_quad_encoder.h" /* TIM2 quadrature count, mirrored to 0x2510:4 (ADR-050) */
 #include "mc_position_controller.h"
 #include "mc_signal_gen.h"
 #include "mc_od.h"
@@ -68,6 +69,9 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
                                and the plant-ID pulse. ~Vbus/2 SVPWM ceiling at 24 V (duty saturates beyond, OC trip
                                bounds current). Raised from 3 V for plant ID (ADR-046). */
 #define MC_DQ_TEST_MAX_MS 10000u  /* d-axis plant-ID max dwell / auto-disarm backstop [ms] @ 1 kHz arbitration (ADR-046) */
+#define MC_STORE_LOAD_ATTEMPTS 3u  /* persistent-config load retries at boot before failing safe (ADR-051) */
+#define MC_HOLD_RELEASE_TICKS 1000u  /* settle time before holding-current release [ms @ 1 kHz medium loop] (ADR-054) */
+#define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
 static bool s_oc_trip;      /* latched over-current trip */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
@@ -84,6 +88,7 @@ static MC_Foc_t       s_foc;
 static MC_FocConfig_t s_foc_cfg;
 static bool           s_foc_on;       /* FOC active (for entry reset) */
 static volatile float s_elec_angle;   /* electrical angle published medium->fast (atomic float) */
+static float s_quad_rad_per_count;    /* signed 2pi/counts_per_rev for the incremental quad (ADR-052) */
 
 /* Brushed-DC backend (ADR-039): single armature-current PI -> locked anti-phase H-bridge voltage. */
 static MC_Pid_t       s_hb_ipi;
@@ -96,6 +101,8 @@ static MC_VelocityControllerConfig_t s_vel_cfg;
 static MC_TorqueModelConfig_t        s_torque_cfg;
 static volatile float                s_iq_cmd_published;  /* velocity-loop iq, medium->fast (atomic) */
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
+static bool                          s_hold_released;     /* holding-current release latched (ADR-054) */
+static uint32_t                      s_hold_settle_ticks; /* settle counter for the holding-current release (ADR-054) */
 
 /* Stage D3: trajectory + position loop (runs in the medium loop; feeds the velocity cascade). */
 static MC_TrajectoryPlanner_t        s_traj;
@@ -128,6 +135,9 @@ static volatile float s_eff_vel_cmd;      /* velocity demand [rad/s] */
 static volatile bool  s_eff_align;        /* commissioning open-loop align active */
 static volatile float s_eff_align_v;      /* open-loop d-axis voltage [V] */
 static volatile float s_eff_align_angle;  /* open-loop electrical angle [rad] */
+static volatile bool  s_eff_align_q;      /* open-loop test on the q-axis (else d-axis) (ADR-046 ext) */
+static volatile bool  s_eff_hb_test;      /* open-loop brushed armature voltage test active (ADR-046 ext) */
+static volatile float s_eff_hb_test_v;    /* open-loop brushed armature voltage [V] */
 static uint32_t       s_dq_test_ticks;    /* d-axis plant-ID arm-time counter (auto-disarm, ADR-046) */
 
 /* Gather the full parameter set -- calibration + every persistent OD entry (gains/config) -- and
@@ -294,17 +304,15 @@ static void od_apply_gains(void)
     s_foc_cfg.id_pi.kp = g_od.foc_id_kp;  s_foc_cfg.id_pi.ki = g_od.foc_id_ki;
     s_foc_cfg.iq_pi.kp = g_od.foc_iq_kp;  s_foc_cfg.iq_pi.ki = g_od.foc_iq_ki;
     s_foc_cfg.voltage_limit_v = g_od.foc_voltage_limit_v;
-    /* Brushed current loop: R/L are config (0x2000:3,4 -> the model); the gains are DERIVED from R/L +
-       bandwidth (0x2400:8) and reported read-only at 0x2400:6,7. kp = wc*L, ki = wc*R cancels the winding pole. */
+    /* Brushed current loop: kp/ki are set DIRECTLY from the OD (0x2400:6,7, RW PERSIST), hand-tuned
+       (ADR-049, replacing the R/L+bandwidth derivation). R/L (0x2000:3,4) still feed the model. */
     s_motor.resistance_ohm = g_od.motor_resistance_ohm;
     s_motor.inductance_h   = g_od.motor_inductance_h;
-    {
-        const float wc  = (g_od.hb_cur_bandwidth > 1.0f) ? g_od.hb_cur_bandwidth : 1500.0f;
-        s_hb_ipi_cfg.kp = wc * g_od.motor_inductance_h;
-        s_hb_ipi_cfg.ki = wc * g_od.motor_resistance_ohm;
-        g_od.hb_cur_kp  = s_hb_ipi_cfg.kp;   /* RO readback of the derived gains */
-        g_od.hb_cur_ki  = s_hb_ipi_cfg.ki;
-    }
+    s_hb_ipi_cfg.kp = g_od.hb_cur_kp;
+    s_hb_ipi_cfg.ki = g_od.hb_cur_ki;
+    /* Incremental quad scale: signed rad/count = 2pi / counts_per_rev (the sign sets direction). (ADR-052) */
+    s_quad_rad_per_count = (fabsf(g_od.quad_counts_per_rev) > 1.0f)
+                         ? (6.28318530717958648f / g_od.quad_counts_per_rev) : 0.0f;
 
     s_est_cfg.velocity_filter_hz = g_od.est_velocity_filter_hz;
     if ((g_od.notch_freq_hz != s_notch_last_f0) || (g_od.notch_bandwidth_hz != s_notch_last_bw))
@@ -321,6 +329,7 @@ static void od_apply_gains(void)
 static void od_mirror_live(void)
 {
     g_od.tlm_vel_demand_rad_s     = g_mc_debug.vel_demand_rad_s;
+    g_od.quad_encoder_count       = MC_QuadEnc_Count();   /* TIM2 quadrature count -> 0x2510:4 (ADR-050) */
     g_od.tlm_vel_actual_rad_s     = g_mc_debug.mech_velocity_rad_s;
     g_od.tlm_vel_iq_cmd_a         = g_mc_debug.vel_iq_cmd_a;
     g_od.tlm_id_meas_a            = g_mc_debug.id_meas_a;
@@ -374,7 +383,7 @@ static void od_mirror_live(void)
     /* statusword + modes_of_operation_display are owned by the E1 arbiter (above). */
     g_od.error_code      = 0u;
     g_od.error_register  = 0u;
-    g_od.fault_flags     = 0u;
+    g_od.fault_flags     = MC_PersistentStore_HasValid() ? 0u : MC_IF_FAULT_NO_CONFIG;  /* ADR-051 */
     /* motor_resistance/inductance (0x2000:3,4) are now config inputs (applied in od_apply_gains),
        no longer mirrored from the model here -- writing them sticks (ADR-039 R/L promotion). */
     g_od.store_status    = (uint16_t)((MC_PersistentStore_HasValid()   ? MC_IF_STORE_VALID   : 0u)
@@ -394,7 +403,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 64u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 71u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -524,11 +533,16 @@ void MC_Framework_Init(void)
     MC_Comms_Init();        /* SPI protocol handler (transport DMA wired in F2b) */
     MC_ModeManager_Init();  /* CiA-402 drive state machine (E1) */
 
-    /* Load persisted calibration (electrical offset + current offsets) if present. */
-    if (MC_PersistentStore_Init() == MC_OK)
+    /* Load persisted calibration + gains, retrying so an unlikely transient at cold boot can't silently
+       fall back to defaults (the store is already A/B-redundant + CRC-checked; this is belt-and-suspenders,
+       ADR-051). If nothing valid loads (cold-boot failure, or a never-configured / version-bumped board),
+       MC_PersistentStore_HasValid() stays false -> od_apply_gains raises 0x2600:1 MC_IF_FAULT_NO_CONFIG and
+       the medium loop inhibits the operational drive via fs.severe_active (commissioning/align unaffected). */
+    for (uint8_t attempt = 0u; (attempt < MC_STORE_LOAD_ATTEMPTS) && !MC_PersistentStore_HasValid(); attempt++)
     {
         MC_Params_t p;
-        if (MC_PersistentStore_Read(&p, (uint16_t)sizeof p) == MC_OK)
+        if ((MC_PersistentStore_Init() == MC_OK) &&
+            (MC_PersistentStore_Read(&p, (uint16_t)sizeof p) == MC_OK))
         {
             s_est_cfg.electrical_offset_rad      = p.calib.electrical_offset_rad;
             s_enc_cfg.mechanical_zero_offset_rad = p.calib.mechanical_zero_offset_rad;
@@ -544,9 +558,9 @@ void MC_Framework_Init(void)
             MC_Od_RestorePersistent(p.od_blob, p.od_blob_len);  /* gains/config back into g_od */
             g_mc_debug.elec_offset_rad           = p.calib.electrical_offset_rad;
             g_mc_debug.home_offset_rad           = p.calib.home_offset_rad;
-            g_mc_debug.store_valid               = true;
         }
     }
+    g_mc_debug.store_valid = MC_PersistentStore_HasValid();
 
     /* Apply the selected drive backend (0x2000:6 motor_backend_sel, persisted; default 0 = BLDC/FOC).
        Per-board, so it is read once here at boot: it picks the dispatch path and the current-sense ADC
@@ -684,7 +698,28 @@ void MC_FastLoop_20kHz(void)
 
     const bool blocked = s_oc_trip || g_mc_inject.request_offset_cal;
 
-    if (brushed && !blocked && s_eff_drive)
+    /* Frequency-sweep current overlay (ADR-047): edge-detect freq_sweep_enable + generate the stepped-sine
+       sample HERE, above the backend dispatch, so it overlays BOTH backends' torque-mode current command
+       (was FOC-branch-only, so it never ran on brushed). Sampled once/cycle -> phase advances once. */
+    {
+        static bool s_sweep_prev_en = false;
+        const bool en = (g_od.freq_sweep_enable != 0u);
+        if (en && !s_sweep_prev_en)
+        {
+            MC_FreqSweep_Start(&s_freq_sweep, g_od.freq_sweep_start_hz, g_od.freq_sweep_end_hz,
+                               g_od.freq_sweep_step_hz, g_od.freq_sweep_dwell_s,
+                               g_od.freq_sweep_bias_a, g_od.freq_sweep_amplitude_a);
+        }
+        else if (!en && MC_FreqSweep_Active(&s_freq_sweep))
+        {
+            MC_FreqSweep_Stop(&s_freq_sweep);
+        }
+        s_sweep_prev_en = en;
+    }
+    const bool  sweep_on = MC_FreqSweep_Active(&s_freq_sweep) && s_eff_torque_mode;
+    const float sweep_iq = sweep_on ? MC_FreqSweep_Sample(&s_freq_sweep, MC_FAST_DT_S) : 0.0f;
+
+    if (brushed && !blocked && (s_eff_drive || s_eff_hb_test))
     {
         /* Armature current for the loop. The new board's ADC1 reads leg B (I_B = -I_A), so s_currents.ia_a
            is the NEGATIVE of the forward armature current -- negate it so the feedback sign matches the
@@ -692,12 +727,17 @@ void MC_FastLoop_20kHz(void)
            Magnitude was verified vs a meter; the DAC shows |i| and was correct, only the sign was wrong.)
            Dual-leg (I_A - I_B)/2 lands once ADC2 reads IN7 = I_A. */
         const float i_arm = -s_currents.ia_a;
-        const float i_cmd = s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published;
+        const float i_cmd = sweep_on ? sweep_iq : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published);  /* sweep overlays here too (ADR-047) */
 
         /* Open-loop voltage (bring-up: verify current sign/scaling) OR the closed armature-current PI.
            Open-loop holds the PI reset so closing it afterwards is bumpless. Gains are live-tunable. */
         float v_cmd;
-        if (g_mc_inject.hb_open_loop)
+        if (s_eff_hb_test)   /* open-loop armature voltage test (brushed_phase, ADR-046 ext) */
+        {
+            v_cmd = MC_Math_Clamp(s_eff_hb_test_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
+            MC_Pid_Reset(&s_hb_ipi);
+        }
+        else if (g_mc_inject.hb_open_loop)
         {
             v_cmd = g_mc_inject.hb_voltage_v;
             MC_Pid_Reset(&s_hb_ipi);
@@ -744,27 +784,9 @@ void MC_FastLoop_20kHz(void)
 
         MC_FocCurrentCommand_t cmd;
         cmd.id_a   = s_eff_id_cmd;
-        /* Frequency-sweep current injection (ADR-047): edge-detect freq_sweep_enable, then in torque mode
-           override iq with bias + amplitude*sin generated HERE at the fast rate (clean to ~200 Hz). */
-        {
-            static bool s_sweep_prev_en = false;
-            const bool en = (g_od.freq_sweep_enable != 0u);
-            if (en && !s_sweep_prev_en)
-            {
-                MC_FreqSweep_Start(&s_freq_sweep, g_od.freq_sweep_start_hz, g_od.freq_sweep_end_hz,
-                                   g_od.freq_sweep_step_hz, g_od.freq_sweep_dwell_s,
-                                   g_od.freq_sweep_bias_a, g_od.freq_sweep_amplitude_a);
-            }
-            else if (!en && MC_FreqSweep_Active(&s_freq_sweep))
-            {
-                MC_FreqSweep_Stop(&s_freq_sweep);
-            }
-            s_sweep_prev_en = en;
-        }
-        /* Torque mode: direct iq (or the sweep). Velocity mode: iq from the medium-loop velocity cascade. */
-        cmd.iq_a   = (MC_FreqSweep_Active(&s_freq_sweep) && s_eff_torque_mode)
-                     ? MC_FreqSweep_Sample(&s_freq_sweep, MC_FAST_DT_S)
-                     : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published);
+        /* Torque mode: direct iq, or the frequency-sweep overlay (sweep_on/sweep_iq computed above so it
+           overlays both backends). Velocity mode: iq from the medium-loop velocity cascade. (ADR-047) */
+        cmd.iq_a   = sweep_on ? sweep_iq : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published);
         cmd.enable = true;
 
         const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;
@@ -787,11 +809,12 @@ void MC_FastLoop_20kHz(void)
         const float vd = MC_Math_Clamp(s_eff_align_v, -MC_C2_VD_MAX, MC_C2_VD_MAX);
         if (!blocked && s_eff_align && (vd != 0.0f))
         {
-            /* Commissioning open-loop d-axis voltage at the commanded electrical angle (C2). */
+            /* Commissioning open-loop voltage at the commanded electrical angle (C2). d-axis: V along
+               (cos,sin); q-axis: V along (-sin,cos), i.e. 90 deg ahead (ADR-046 ext). */
             float sin_e, cos_e;
             MC_Math_SinCos(s_eff_align_angle, &sin_e, &cos_e);
-            const float v_alpha = vd * cos_e;   /* Vq = 0 */
-            const float v_beta  = vd * sin_e;
+            const float v_alpha = s_eff_align_q ? (-vd * sin_e) : (vd * cos_e);
+            const float v_beta  = s_eff_align_q ? ( vd * cos_e) : (vd * sin_e);
             const float v_a = v_alpha;
             const float v_b = -0.5f * v_alpha + 0.86602540f * v_beta;   /* inverse Clarke */
             const float v_c = -0.5f * v_alpha - 0.86602540f * v_beta;
@@ -850,29 +873,56 @@ void MC_MotionLoop_1kHz(void)
     s_est_cfg.obs_filter_alpha = g_od.est_obs_filter_alpha;   /* observer output LPF, live-tunable (0x2500:7, ADR-003) */
     s_est_cfg.use_observer = (g_od.est_use_observer != 0u);
 
-    if (MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample))
+    /* Position feedback source. Tied to the backend for now (ADR-052, interim): the brushed axis uses the
+       incremental quad on TIM2; the FOC axis uses the SSI. A clean per-board selector is the next step. */
+    bool sample_ok;
+    if (s_motor.backend_type == MC_MOTOR_BACKEND_BRUSHED_DC_HBRIDGE)
+    {
+        /* Incremental quad: continuous count -> rad (signed s_quad_rad_per_count). The estimator
+           accumulates wrap_pi deltas, so it needs no single-turn anchor; absolute=false marks "no
+           absolute position until homed" -- velocity is valid immediately, which closes the brushed
+           velocity loop (ADR-052). */
+        const int32_t cnt = MC_QuadEnc_Count();
+        s_pos_sample.position_rad    = (float)cnt * s_quad_rad_per_count;
+        s_pos_sample.raw_position    = (uint32_t)cnt;
+        s_pos_sample.timestamp_ticks = 0u;
+        s_pos_sample.valid           = true;
+        s_pos_sample.absolute        = false;
+        s_pos_sample.error           = false;
+        s_pos_sample.warning         = false;
+        sample_ok = true;
+    }
+    else
+    {
+        sample_ok = MC_SsiEncoder_ReadHardware(&s_enc, &s_enc_cfg, &s_pos_sample);
+    }
+
+    if (sample_ok)
     {
         MC_StateEstimator_Update(&s_est, &s_est_cfg, &s_pos_sample);
 
-        /* Startup position anchor (ADR-037, hardened by ADR-038). The single-turn absolute encoder
-           loses the turn count across a power cycle, so the continuous position must be anchored to the
-           home-relative reading wrapped to the nearest turn. The original one-shot seed (s_pos_seeded)
-           raced the persistent home load on a COLD boot: it could fire with s_home_offset_rad still 0,
-           leaving continuous ~1 turn off everywhere except home (a soft reset hid it -- RAM kept the
-           good anchor so the seed never re-ran). Hardened: while the drive has NEVER been enabled,
-           re-anchor every cycle -- idempotent once correct, and self-correcting if home loads late or
-           the encoder is slow to read. s_pos_locked latches on the first enable so motion thereafter
-           tracks true multi-turn (deltas accumulate past +/-pi without being wrapped back). */
-        if (s_eff_drive)
+        /* Startup position anchor (ADR-037, hardened by ADR-038) -- single-turn ABSOLUTE encoders only
+           (the incremental quad is already continuous and skips this, accumulating from the power-on
+           count). The single-turn absolute encoder loses the turn count across a power cycle, so the
+           continuous position must be anchored to the home-relative reading wrapped to the nearest turn.
+           The original one-shot seed raced the persistent home load on a COLD boot: it could fire with
+           s_home_offset_rad still 0, leaving continuous ~1 turn off everywhere except home (a soft reset
+           hid it -- RAM kept the good anchor so the seed never re-ran). Hardened: while the drive has
+           NEVER been enabled, re-anchor every cycle -- idempotent once correct, self-correcting if home
+           loads late. s_pos_locked latches on the first enable so motion tracks true multi-turn. */
+        if (s_pos_sample.absolute)
         {
-            s_pos_locked = true;   /* drive engaged -> freeze the anchor; track multi-turn from here */
-        }
-        else if (!s_pos_locked && s_pos_sample.valid)
-        {
-            float home_rel = s_pos_sample.position_rad - s_home_offset_rad;
-            while (home_rel >  3.14159265358979324f) { home_rel -= 6.28318530717958648f; }
-            while (home_rel < -3.14159265358979324f) { home_rel += 6.28318530717958648f; }
-            MC_StateEstimator_SeedContinuous(&s_est, s_home_offset_rad + home_rel);
+            if (s_eff_drive)
+            {
+                s_pos_locked = true;   /* drive engaged -> freeze the anchor; track multi-turn from here */
+            }
+            else if (!s_pos_locked && s_pos_sample.valid)
+            {
+                float home_rel = s_pos_sample.position_rad - s_home_offset_rad;
+                while (home_rel >  3.14159265358979324f) { home_rel -= 6.28318530717958648f; }
+                while (home_rel < -3.14159265358979324f) { home_rel += 6.28318530717958648f; }
+                MC_StateEstimator_SeedContinuous(&s_est, s_home_offset_rad + home_rel);
+            }
         }
     }
 
@@ -901,10 +951,13 @@ void MC_MotionLoop_1kHz(void)
         dc.fault_reset               = (g_od.controlword & MC_IF_CW_FAULT_RESET) != 0u;
 
         MC_FaultState_t fs = {0};
-        fs.severe_active = s_oc_trip;
+        /* No valid persistent config -> treat as severe so the mode manager won't enable the operational
+           drive (commissioning/align bypass this). Self-clears once a valid config loads or is saved (ADR-051). */
+        fs.severe_active = s_oc_trip || !MC_PersistentStore_HasValid();
         MC_ModeManager_Update(&dc, &fs);
         const MC_DriveStatus_t ds = MC_ModeManager_GetStatus();
 
+        s_eff_align_q = false; s_eff_hb_test = false;   /* default each cycle; the dq-test sets per-axis (ADR-046 ext) */
         if (g_mc_inject.inject_enable)
         {
             /* Commissioning: identical to the watch-window behaviour. */
@@ -933,9 +986,21 @@ void MC_MotionLoop_1kHz(void)
             if (dwell_ms > MC_DQ_TEST_MAX_MS) { dwell_ms = MC_DQ_TEST_MAX_MS; }
             const bool dwell_done = (++s_dq_test_ticks > dwell_ms);  /* 1 tick = 1 ms (1 kHz arbitration) */
             if (dwell_done) { g_od.dq_test_enable = 0u; }            /* dwell elapsed -> pulse back to 0 */
-            s_eff_align         = (!dwell_done) && (fabsf(g_od.dq_test_voltage_v) > 1e-3f);
-            s_eff_align_v       = dwell_done ? 0.0f : g_od.dq_test_voltage_v;
-            s_eff_align_angle   = g_od.dq_test_angle_rad;
+            const bool  test_on = (!dwell_done) && (fabsf(g_od.dq_test_voltage_v) > 1e-3f);
+            const float test_v  = test_on ? g_od.dq_test_voltage_v : 0.0f;
+            if (g_od.dq_test_axis == 2u)        /* brushed_phase: open-loop H-bridge armature voltage */
+            {
+                s_eff_hb_test   = test_on;
+                s_eff_hb_test_v = test_v;
+                s_eff_align     = false;
+            }
+            else                                /* 0 = d-axis, 1 = q-axis: FOC open-loop SVPWM at the angle */
+            {
+                s_eff_align       = test_on;
+                s_eff_align_v     = test_v;
+                s_eff_align_angle = g_od.dq_test_angle_rad;
+                s_eff_align_q     = (g_od.dq_test_axis == 1u);
+            }
             s_eff_drive         = false;
             s_eff_torque_mode   = false;
             s_eff_position_mode = false;
@@ -1087,6 +1152,7 @@ void MC_MotionLoop_1kHz(void)
             s_align_vd  = MC_Math_Clamp(s_align_vd, 0.0f, MC_C2_VD_MAX);
 
             s_eff_align       = true;
+            s_eff_align_q     = false;   /* electrical alignment is always d-axis */
             s_eff_align_v     = s_align_vd;
             s_eff_align_angle = 0.0f;
             s_eff_drive       = false;
@@ -1237,7 +1303,8 @@ void MC_MotionLoop_1kHz(void)
     const bool vel_active = s_eff_drive && !s_eff_torque_mode && !s_oc_trip;
     if (vel_active)
     {
-        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); MC_Notch_Reset(&s_iq_notch); s_vel_on = true; }
+        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); MC_Notch_Reset(&s_iq_notch);
+                         s_hold_released = false; s_hold_settle_ticks = 0u; s_vel_on = true; }
 
         /* Motor safety envelope (ADR-040): clamp the velocity demand to the motor-owned ceiling,
            whatever its source (position cascade, direct velocity, signal generator). 0 = disabled. */
@@ -1281,18 +1348,50 @@ void MC_MotionLoop_1kHz(void)
             }
         }
         const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
-        const float tcorr = MC_VelocityController_Update(&s_vel, &s_vel_cfg, vdem, vact);
 
-        MC_CurrentRequestDebug_t crd;
-        MC_MotorTorqueRequest_t treq =
-            MC_CurrentRequest_Update(&s_torque_cfg, tcorr, s_accel_ff_rad_s2 /* trajectory accel FF (D3) */, vact, true, &crd);
-        MC_FocCurrentCommand_t fcmd = MC_CurrentRequest_ToFocCommand(&s_torque_cfg, &treq);
+        /* Holding-current release (ADR-054): with holding_current_a == 0, once the axis is commanded to
+           zero AND has settled at ~zero velocity for ~1 s, cut the current demand to 0 and park the
+           velocity integrator (anti-windup). Stays released until a non-zero command, so a back-drivable
+           axis can't hunt (release->drift->re-engage); resume is bumpless from the reset state. Only safe
+           where the mechanism self-holds (e.g. a self-locking leadscrew) -- it will drift if back-drivable. */
+        const bool cmd_zero = (fabsf(vdem) < 1e-3f);
+        if ((g_od.holding_current_a > 0.0f) || !cmd_zero)
+        {
+            s_hold_released = false;
+            s_hold_settle_ticks = 0u;
+        }
+        else if (!s_hold_released)   /* holding==0 AND commanded zero: time the settle at ~zero speed */
+        {
+            if (fabsf(vact) < MC_HOLD_SETTLED_EPS)
+            {
+                if (++s_hold_settle_ticks >= MC_HOLD_RELEASE_TICKS) { s_hold_released = true; }
+            }
+            else { s_hold_settle_ticks = 0u; }
+        }
 
-        const float iq_notched = MC_Notch_Update(&s_iq_notch, fcmd.iq_a);   /* current-command notch (ADR-048) */
-        s_iq_cmd_published = g_od.notch_enable ? iq_notched : fcmd.iq_a;
-        g_mc_debug.vel_demand_rad_s  = vdem;
-        g_mc_debug.vel_torque_cmd_nm = treq.torque_nm;
-        g_mc_debug.vel_iq_cmd_a      = fcmd.iq_a;
+        if (s_hold_released)
+        {
+            MC_VelocityController_Reset(&s_vel);   /* park the integrator -> no windup, bumpless resume */
+            s_iq_cmd_published           = 0.0f;
+            g_mc_debug.vel_demand_rad_s  = vdem;
+            g_mc_debug.vel_torque_cmd_nm = 0.0f;
+            g_mc_debug.vel_iq_cmd_a      = 0.0f;
+        }
+        else
+        {
+            const float tcorr = MC_VelocityController_Update(&s_vel, &s_vel_cfg, vdem, vact);
+
+            MC_CurrentRequestDebug_t crd;
+            MC_MotorTorqueRequest_t treq =
+                MC_CurrentRequest_Update(&s_torque_cfg, tcorr, s_accel_ff_rad_s2 /* trajectory accel FF (D3) */, vact, true, &crd);
+            MC_FocCurrentCommand_t fcmd = MC_CurrentRequest_ToFocCommand(&s_torque_cfg, &treq);
+
+            const float iq_notched = MC_Notch_Update(&s_iq_notch, fcmd.iq_a);   /* current-command notch (ADR-048) */
+            s_iq_cmd_published = g_od.notch_enable ? iq_notched : fcmd.iq_a;
+            g_mc_debug.vel_demand_rad_s  = vdem;
+            g_mc_debug.vel_torque_cmd_nm = treq.torque_nm;
+            g_mc_debug.vel_iq_cmd_a      = fcmd.iq_a;
+        }
     }
     else
     {

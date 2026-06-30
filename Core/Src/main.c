@@ -117,6 +117,7 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim7);          /* 1 kHz medium loop */
   HAL_TIM_Base_Start(&htim1);             /* PWM time base: generates OC4REF/TRGO, outputs off */
+  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);  /* quadrature encoder count on TIM2 (PA15/PB3), ADR-050 */
 
   HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
   HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);

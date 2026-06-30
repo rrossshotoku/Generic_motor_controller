@@ -23,14 +23,15 @@ typedef struct
     float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */
     float    vel_accel_up, vel_accel_dn;             /* 0x2300:6,7 velocity-demand accel ramp caps [rad/s^2] (ADR-042) */
     float    vel_accel_jerk;                         /* 0x2300:8 accel ramp-up jerk [rad/s^3]; 0 = step (ADR-042) */
+    float    holding_current_a;                      /* 0x2300:9 0 = release held current after settle; >0 = hold (ADR-054) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
-    float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed PI gains -- DERIVED, RO (ADR-039) */
-    float    hb_cur_bandwidth;                       /* 0x2400:8 brushed current-loop bandwidth wc [rad/s] */
+    float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed current PI gains, set directly (ADR-049) */
     float    est_electrical_offset_rad;              /* 0x2500:1 */
     float    est_velocity_filter_hz;                 /* 0x2500:2 */
     float    est_obs_kp, est_obs_ki, est_obs_kv;     /* 0x2500:3..5 */
     uint8_t  est_use_observer;                       /* 0x2500:6 */
     float    est_obs_filter_alpha;                   /* 0x2500:7 observer output LPF coeff (0..1); ~57 Hz at 0.3 (ADR-003) */
+    float    quad_counts_per_rev;                    /* 0x2500:8 incremental quad scale, signed (= 4x lines); sign = direction (ADR-052) */
     float    current_trip_a;                         /* 0x2600:2 */
     float    max_velocity_rad_s;                     /* 0x2600:4 motor safety envelope -- vel ceiling (ADR-040) */
     float    max_accel_rad_s2;                       /* 0x2600:5 motor safety envelope -- accel ceiling (ADR-040) */
@@ -48,6 +49,7 @@ typedef struct
     float    dq_test_angle_rad;                      /* 0x2900:7 d-axis plant-ID electrical angle [rad] (ADR-046) */
     uint8_t  dq_test_enable;                         /* 0x2900:8 d-axis plant-ID arm (1=fire pulse); auto-disarms (ADR-046) */
     uint16_t dq_test_dwell_ms;                       /* 0x2900:9 d-axis plant-ID pulse dwell [ms]; then back to 0 (ADR-046) */
+    uint8_t  dq_test_axis;                           /* 0x2900:10 0=d-axis 1=q-axis 2=brushed_phase (ADR-046 ext) */
     float    inject_step_amplitude;
     /* --- 0x2910 loop-tuning test-signal overlay (ADR-030) --- */
     uint8_t  test_mode;              /* 0x2910:1 (MC_IF_TEST_MODE_*) */
@@ -81,6 +83,7 @@ typedef struct
     float    tlm_i_arm_a;                            /* 0x2410:6 brushed armature current (ADR-039) */
     float    tlm_mech_position_rad, tlm_mech_velocity_rad_s;                 /* 0x2510:1,2 */
     float    tlm_pos_demand_rad;                                            /* 0x2510:3 PDO -- absolute (home-relative) position demand */
+    int32_t  quad_encoder_count;                                           /* 0x2510:4 PDO -- raw TIM2 quadrature count (ADR-050) */
     float    tlm_bus_voltage_v;                                              /* 0x2600:3 */
     uint16_t cal_status, store_status;
     uint16_t cal_done_flags;         /* 0x2700:5 RO -- calibration-completeness bitfield (ADR-026) */

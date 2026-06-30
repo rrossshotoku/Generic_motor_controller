@@ -47,3 +47,13 @@ response peaks.
   normalise out the rigid-body 1/ω velocity rolloff** (`v = τ/(Jω)`) so resonances/anti-resonances
   stand out. On finish it pops a non-modal pyqtgraph frequency-vs-amplitude window. Needs
   `tlm_vel_actual_rad_s` streamed at cyclic rate ≥ 1 kHz; longer dwell = cleaner low-frequency points.
+
+## Update (2026-06-30, build 70): overlays both backends
+
+The sweep generation + injection originally lived inside the FOC fast-loop branch, so they never ran on
+the brushed backend (the brushed dispatch takes a different branch, and the sample only fed the FOC
+`cmd.iq_a`). Hoisted the `freq_sweep_enable` edge-detect + the single `MC_FreqSweep_Sample` above the
+backend dispatch into `sweep_on` / `sweep_iq`, and overlaid them on **both** the brushed armature command
+(`i_cmd`) and the FOC `cmd.iq_a`. Sampled once per fast cycle (phase advances once); torque-mode only;
+inert during the open-loop `hb_test`. With the quad velocity now wired (ADR-052), the full brushed
+sweep → velocity-response → Bode workflow is functional.

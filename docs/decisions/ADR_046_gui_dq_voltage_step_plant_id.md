@@ -69,5 +69,17 @@ the scope); an automated sweep is a possible future enhancement.
   the alignment current-regulates to its target, so its current is unchanged, and the OC trip
   remains the current safety for all open-loop paths.
 - The operator must treat "dq_test armed" as "motor live regardless of axis_manager."
+
+## Extension — multi-axis open-loop drive (2026-06-29)
+
+`0x2900:10 dq_test_axis` selects the open-loop drive node so the tester works on **both
+backends**: `0` = d-axis (FOC SVPWM at the angle — the original; holds, for R/L ID), `1` =
+q-axis (FOC SVPWM 90° ahead — torque axis), `2` = brushed_phase (open-loop armature voltage on
+the H-bridge). d/q feed the FOC align path; brushed_phase drives the H-bridge `v_cmd` open-loop
+(clamped to ±`MC_C2_VD_MAX`, armature PI held in reset). The arbitration defaults the two new
+flags (`s_eff_align_q`, `s_eff_hb_test`) off every cycle so a finished pulse can't latch the
+drive. q-axis and brushed_phase produce torque — the motor can spin (the GUI confirmation warns).
+Note: q-axis uses the *fixed* test angle, so it holds 90° from d; a rotor-tracking / V-f
+*spinning* open-loop test would be a separate feature.
 - The dead time itself (~1.9 µs, large) is worth revisiting per-board — halving it halves the
   voltage distortion.

@@ -117,11 +117,12 @@ void MC_OdStore_LoadDefaults(void)
     g_od.vel_load_factor = 1.0f;   /* 0x2300:5 -- no load scaling by default (REQ-0014/ADR-034) */
     g_od.vel_accel_up = 0.0f;  g_od.vel_accel_dn = 0.0f;   /* 0x2300:6,7 velocity accel ramp off by default (ADR-042) */
     g_od.vel_accel_jerk = 0.0f;                            /* 0x2300:8 accel ramp-up jerk off (= plain accel ramp) */
+    g_od.holding_current_a = 1.0f;                         /* 0x2300:9 default >0 = always hold; set 0 to release after settle (ADR-054) */
 
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;
     g_od.foc_iq_kp = 1.7f;   g_od.foc_iq_ki = 1700.0f;
-    g_od.hb_cur_bandwidth = 1500.0f;  /* brushed current-loop wc [rad/s]; kp=wc*L, ki=wc*R derived from R/L (ADR-039) */
+    g_od.hb_cur_kp = 5.55f;  g_od.hb_cur_ki = 6300.0f;  /* brushed current PI gains, set directly (ADR-049) */
     g_od.foc_voltage_limit_v = 13.8f;
 
     /* Encoder / estimator */
@@ -129,6 +130,7 @@ void MC_OdStore_LoadDefaults(void)
     g_od.est_velocity_filter_hz    = 20.0f;
     g_od.est_obs_kp = 40000.0f; g_od.est_obs_ki = 0.0f; g_od.est_obs_kv = 200.0f;
     g_od.est_obs_filter_alpha = 0.3f;   /* observer output LPF coeff (~57 Hz at 1 kHz); was hardcoded (ADR-003) */
+    g_od.quad_counts_per_rev = 4000.0f; /* incremental quad: 4x lines -- SET TO YOUR ENCODER; sign flips count direction (ADR-052) */
     /* Stepped-sine current sweep defaults (ADR-047): 5..200 Hz, 5 Hz steps, 0.5 s dwell, 0.2 A AC, no bias. */
     g_od.freq_sweep_start_hz = 5.0f;  g_od.freq_sweep_end_hz = 200.0f; g_od.freq_sweep_step_hz = 5.0f;
     g_od.freq_sweep_dwell_s  = 0.5f;  g_od.freq_sweep_bias_a = 0.0f;   g_od.freq_sweep_amplitude_a = 0.2f;
