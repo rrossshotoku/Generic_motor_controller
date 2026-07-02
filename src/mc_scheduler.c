@@ -72,6 +72,8 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
 #define MC_STORE_LOAD_ATTEMPTS 3u  /* persistent-config load retries at boot before failing safe (ADR-051) */
 #define MC_HOLD_RELEASE_TICKS 1000u  /* settle time before holding-current release [ms @ 1 kHz medium loop] (ADR-054) */
 #define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
+#define MC_HOME_DWELL_MS   10u     /* stall-current dwell before the end stop is confirmed [ms @ 1 kHz] (ADR-057) */
+#define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if the current never trips [ms @ 1 kHz] (ADR-057) */
 static bool s_oc_trip;      /* latched over-current trip */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
@@ -103,6 +105,9 @@ static volatile float                s_iq_cmd_published;  /* velocity-loop iq, m
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
 static bool                          s_hold_released;     /* holding-current release latched (ADR-054) */
 static uint32_t                      s_hold_settle_ticks; /* settle counter for the holding-current release (ADR-054) */
+static uint32_t                      s_home_dwell_ticks;  /* stall-current dwell counter for homing (ADR-057) */
+static uint32_t                      s_home_total_ticks;  /* homing elapsed-time counter for the timeout (ADR-057) */
+static bool                          s_homed;             /* incremental encoder zeroed this power-cycle (NOT persisted; gates position recalls) (ADR-057) */
 
 /* Stage D3: trajectory + position loop (runs in the medium loop; feeds the velocity cascade). */
 static MC_TrajectoryPlanner_t        s_traj;
@@ -383,7 +388,10 @@ static void od_mirror_live(void)
     /* statusword + modes_of_operation_display are owned by the E1 arbiter (above). */
     g_od.error_code      = 0u;
     g_od.error_register  = 0u;
-    g_od.fault_flags     = MC_PersistentStore_HasValid() ? 0u : MC_IF_FAULT_NO_CONFIG;  /* ADR-051 */
+    g_od.fault_flags     = (MC_PersistentStore_HasValid() ? 0u : MC_IF_FAULT_NO_CONFIG)   /* ADR-051 */
+                         | ((!s_pos_sample.absolute && !s_homed) ? MC_IF_FAULT_NOT_HOMED : 0u)  /* ADR-057 */
+                         | (s_oc_trip ? MC_IF_FAULT_OVERCURRENT : 0u);                    /* ADR-058: OC trip as a fault bit */
+    g_od.fault_flags_latched |= g_od.fault_flags;   /* sticky since-boot fault history (ADR-058) */
     /* motor_resistance/inductance (0x2000:3,4) are now config inputs (applied in od_apply_gains),
        no longer mirrored from the model here -- writing them sticks (ADR-039 R/L promotion). */
     g_od.store_status    = (uint16_t)((MC_PersistentStore_HasValid()   ? MC_IF_STORE_VALID   : 0u)
@@ -403,7 +411,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 74u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 79u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -958,6 +966,25 @@ void MC_MotionLoop_1kHz(void)
         const MC_DriveStatus_t ds = MC_ModeManager_GetStatus();
 
         s_eff_align_q = false; s_eff_hb_test = false;   /* default each cycle; the dq-test sets per-axis (ADR-046 ext) */
+
+        /* Homing state machine (ADR-057): home_command is a level -- 1 = run, 0 = idle/reset. Watch-inject
+           and the dq-test preempt it. Command 0 also clears a latched DONE/FAILED back to IDLE (re-arm = 0->1). */
+        if ((g_od.home_command != 0u) && !g_mc_inject.inject_enable && !g_od.dq_test_enable)
+        {
+            if (g_od.home_status == MC_IF_HOME_IDLE)   /* rising into an idle state -> start */
+            {
+                g_od.home_status   = MC_IF_HOME_RUNNING;
+                s_home_dwell_ticks = 0u;
+                s_home_total_ticks = 0u;
+                vel_slew_reset(s_est.mechanical.velocity_rad_per_s);   /* ramp the approach from the current velocity (ADR-057) */
+            }
+        }
+        else
+        {
+            if (g_od.home_status == MC_IF_HOME_RUNNING) { g_od.home_status = MC_IF_HOME_IDLE; }  /* off/preempt -> abort */
+            if (g_od.home_command == 0u)                { g_od.home_status = MC_IF_HOME_IDLE; }  /* 0 clears done/failed */
+        }
+
         if (g_mc_inject.inject_enable)
         {
             /* Commissioning: identical to the watch-window behaviour. */
@@ -1011,6 +1038,51 @@ void MC_MotionLoop_1kHz(void)
             g_od.statusword     = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
                                            | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
         }
+        else if (g_od.home_status == MC_IF_HOME_RUNNING)
+        {
+            /* Homing to a hard end stop (ADR-057): drive velocity mode at home_velocity toward the stop.
+               The stop is detected by the armature current exceeding home_current for MC_HOME_DWELL_MS
+               (10 ms) OR the OC trip firing -- a hard stop spikes the current past the OC limit before a
+               longer dwell would confirm, and the OC trip blocks the drive, so we must treat it as the
+               stop signal too. Then set the encoder zero here (like set-mech-zero) and stop. Abort after
+               MC_HOME_TIMEOUT_MS if neither trips. Uses the velocity loop -> needs the quad feedback (0x2500:8). */
+            s_dq_test_ticks = 0u;
+            s_home_total_ticks++;
+            if (fabsf(g_mc_debug.i_arm_a) > g_od.home_current_a) { s_home_dwell_ticks++; }
+            else                                                 { s_home_dwell_ticks = 0u; }
+
+            s_eff_align       = false;
+            s_eff_torque_mode = false;   /* velocity mode */
+            s_eff_position_mode = false;
+            s_eff_halt        = false;
+            s_eff_iq_cmd      = 0.0f;
+            s_eff_id_cmd      = 0.0f;
+
+            if ((s_home_dwell_ticks >= MC_HOME_DWELL_MS) || s_oc_trip)   /* stall dwell OR OC trip -> end stop */
+            {
+                s_home_offset_rad          = s_est.mechanical.position_rad;
+                g_mc_debug.home_offset_rad = s_home_offset_rad;
+                params_save();
+                if (s_oc_trip) { s_oc_trip = false; }   /* the trip WAS the stop signal -> consume it so the axis is usable */
+                g_od.home_status = MC_IF_HOME_DONE;
+                s_homed          = true;   /* incremental axis now has a zero -> position recalls allowed (ADR-057) */
+                s_eff_drive      = false;
+                s_eff_vel_cmd    = 0.0f;
+            }
+            else if (s_home_total_ticks >= MC_HOME_TIMEOUT_MS)  /* safety timeout -> fail (no stop found) */
+            {
+                g_od.home_status = MC_IF_HOME_FAILED;
+                s_eff_drive      = false;
+                s_eff_vel_cmd    = 0.0f;
+            }
+            else                                                /* keep driving toward the stop */
+            {
+                s_eff_drive   = true;
+                s_eff_vel_cmd = vel_slew_limit(g_od.home_velocity_rad_s);   /* ramp the approach per the accel limits (0x2300:6/7/8, ADR-042) */
+            }
+            g_od.statusword = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
+                                       | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
+        }
         else
         {
             /* Remote: the mode manager (OD/CiA-402) drives. Boot-safe (controlword 0 = Disabled). */
@@ -1044,7 +1116,10 @@ void MC_MotionLoop_1kHz(void)
                    move. NEW_SETPOINT (rising edge, latched by the mode manager) starts a fresh plan. */
                 s_eff_torque_mode   = false;
                 s_eff_position_mode = true;
-                if (ds.new_setpoint_latched)
+                /* Block position recalls until the incremental encoder has zeroed (ADR-057): an absolute
+                   encoder (SSI) is always OK; an incremental one (quad) needs homing/zeroing first, else the
+                   target would be relative to the meaningless power-on count. s_homed is not persisted. */
+                if (ds.new_setpoint_latched && (s_pos_sample.absolute || s_homed))
                 {
                     MC_TrajRequest_t req;
                     req.start.position_rad             = s_est.mechanical.position_rad - s_home_offset_rad;
@@ -1428,6 +1503,7 @@ void MC_MotionLoop_1kHz(void)
         g_mc_inject.request_set_mech_zero = false;
         s_home_offset_rad          = s_est.mechanical.position_rad;
         g_mc_debug.home_offset_rad = s_home_offset_rad;
+        s_homed                    = true;   /* manual zero also un-gates position recalls (ADR-057) */
         params_save();
     }
 

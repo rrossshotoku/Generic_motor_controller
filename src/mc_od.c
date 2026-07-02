@@ -147,6 +147,10 @@ void MC_OdStore_LoadDefaults(void)
     /* Electrical-alignment routine defaults (ADR-024). */
     g_od.cal_align_current_a = 1.0f;     /* d-axis align current [A] */
     g_od.cal_align_hold_ms   = 1500u;    /* drive/hold duration [ms] */
+    g_od.home_velocity_rad_s = -1.0f;    /* 0x2700:6 homing: gentle negative approach -- SET FOR YOUR AXIS (ADR-057) */
+    g_od.home_current_a      = 2.0f;     /* 0x2700:7 homing: stall-detect current [A] -- SET FOR YOUR AXIS (ADR-057) */
+    g_od.home_command        = 0u;       /* idle */
+    g_od.home_status         = 0u;       /* MC_IF_HOME_IDLE */
 }
 
 /* Set the write-range window [lo,hi] for one entry (motor policy; ranges aren't in the contract).

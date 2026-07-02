@@ -75,6 +75,10 @@ typedef struct
     uint16_t cal_command;                            /* 0x2700:1 */
     float    cal_align_current_a;                     /* 0x2700:3 electrical-align current [A] (PERSIST) */
     uint16_t cal_align_hold_ms;                       /* 0x2700:4 electrical-align hold [ms] (PERSIST) */
+    float    home_velocity_rad_s;                     /* 0x2700:6 homing approach velocity, signed (ADR-057) */
+    float    home_current_a;                          /* 0x2700:7 homing stall-detect current [A] (ADR-057) */
+    uint8_t  home_command;                            /* 0x2700:8 1 = run homing, 0 = idle/abort (ADR-057) */
+    uint8_t  home_status;                             /* 0x2700:9 RO 0=idle 1=running 2=done 3=failed (ADR-057) */
     uint16_t store_save_command;                     /* 0x2800:1 */
 
     /* --- Telemetry (RO; mirrored from the live control state) --- */
@@ -92,6 +96,7 @@ typedef struct
     float    motor_resistance_ohm;   /* 0x2000:3 */
     float    motor_inductance_h;     /* 0x2000:4 */
     uint32_t fault_flags;            /* 0x2600:1 */
+    uint32_t fault_flags_latched;    /* 0x2600:10 RO -- sticky OR of fault_flags since boot (fault history, ADR-058) */
     uint16_t store_factory_reset;    /* 0x2800:3 */
 
     /* --- CiA-402 standard objects (REQ-0001). RW = stored (mode manager applies later);
