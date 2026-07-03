@@ -150,6 +150,7 @@ void MC_OdStore_LoadDefaults(void)
     g_od.home_velocity_rad_s = -1.0f;    /* 0x2700:6 homing: gentle negative approach -- SET FOR YOUR AXIS (ADR-057) */
     g_od.home_current_a      = 2.0f;     /* 0x2700:7 homing: stall-detect current [A] -- SET FOR YOUR AXIS (ADR-057) */
     g_od.home_command        = 0u;       /* idle */
+    g_od.mech_zero_set_rad   = 0.0f;     /* 0x2700:10 mech-zero target for SET_MECH_ZERO_AT (ADR-022) */
     g_od.home_status         = 0u;       /* MC_IF_HOME_IDLE */
 }
 

@@ -72,8 +72,9 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
 #define MC_STORE_LOAD_ATTEMPTS 3u  /* persistent-config load retries at boot before failing safe (ADR-051) */
 #define MC_HOLD_RELEASE_TICKS 1000u  /* settle time before holding-current release [ms @ 1 kHz medium loop] (ADR-054) */
 #define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
-#define MC_HOME_DWELL_MS   10u     /* stall-current dwell before the end stop is confirmed [ms @ 1 kHz] (ADR-057) */
-#define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if the current never trips [ms @ 1 kHz] (ADR-057) */
+#define MC_HOME_STILL_MS   1000u   /* end stop confirmed after movement stays negligible this long [ms @ 1 kHz] (ADR-057) */
+#define MC_HOME_STILL_EPS  0.01f   /* |mechanical velocity| below this counts as "not moving" [rad/s] (ADR-057) */
+#define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if it never settles / trips [ms @ 1 kHz] (ADR-057) */
 static bool s_oc_trip;      /* latched over-current trip */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
@@ -105,8 +106,10 @@ static volatile float                s_iq_cmd_published;  /* velocity-loop iq, m
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
 static bool                          s_hold_released;     /* holding-current release latched (ADR-054) */
 static uint32_t                      s_hold_settle_ticks; /* settle counter for the holding-current release (ADR-054) */
-static uint32_t                      s_home_dwell_ticks;  /* stall-current dwell counter for homing (ADR-057) */
+static uint32_t                      s_home_still_ticks;  /* homing no-movement dwell counter (ADR-057) */
 static uint32_t                      s_home_total_ticks;  /* homing elapsed-time counter for the timeout (ADR-057) */
+static bool                          s_home_moved;        /* homing: axis has moved -> arm the no-movement detector (ADR-057) */
+static bool                          s_set_zero_at_pending; /* deferred SET_MECH_ZERO_AT: apply mech_zero_set_rad in the medium loop (ADR-022) */
 static bool                          s_homed;             /* incremental encoder zeroed this power-cycle (NOT persisted; gates position recalls) (ADR-057) */
 
 /* Stage D3: trajectory + position loop (runs in the medium loop; feeds the velocity cascade). */
@@ -411,7 +414,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 79u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 82u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -974,8 +977,10 @@ void MC_MotionLoop_1kHz(void)
             if (g_od.home_status == MC_IF_HOME_IDLE)   /* rising into an idle state -> start */
             {
                 g_od.home_status   = MC_IF_HOME_RUNNING;
-                s_home_dwell_ticks = 0u;
+                s_home_still_ticks = 0u;
                 s_home_total_ticks = 0u;
+                s_home_moved       = false;
+                s_oc_trip          = false;   /* drop any stale latched trip so it can't instantly "find" the stop (ADR-057) */
                 vel_slew_reset(s_est.mechanical.velocity_rad_per_s);   /* ramp the approach from the current velocity (ADR-057) */
             }
         }
@@ -1048,8 +1053,11 @@ void MC_MotionLoop_1kHz(void)
                MC_HOME_TIMEOUT_MS if neither trips. Uses the velocity loop -> needs the quad feedback (0x2500:8). */
             s_dq_test_ticks = 0u;
             s_home_total_ticks++;
-            if (fabsf(g_mc_debug.i_arm_a) > g_od.home_current_a) { s_home_dwell_ticks++; }
-            else                                                 { s_home_dwell_ticks = 0u; }
+            /* End stop = axis moved, then movement went negligible. Arming on "has moved" keeps the
+               initial ramp-up from rest from being mistaken for the stop. (ADR-057) */
+            const float vmag = fabsf(s_est.mechanical.velocity_rad_per_s);
+            if (vmag > MC_HOME_STILL_EPS) { s_home_moved = true; s_home_still_ticks = 0u; }
+            else if (s_home_moved)        { s_home_still_ticks++; }
 
             s_eff_align       = false;
             s_eff_torque_mode = false;   /* velocity mode */
@@ -1058,7 +1066,7 @@ void MC_MotionLoop_1kHz(void)
             s_eff_iq_cmd      = 0.0f;
             s_eff_id_cmd      = 0.0f;
 
-            if ((s_home_dwell_ticks >= MC_HOME_DWELL_MS) || s_oc_trip)   /* stall dwell OR OC trip -> end stop */
+            if ((s_home_still_ticks >= MC_HOME_STILL_MS) || s_oc_trip)   /* no movement for MC_HOME_STILL_MS OR OC trip -> end stop */
             {
                 s_home_offset_rad          = s_est.mechanical.position_rad;
                 g_mc_debug.home_offset_rad = s_home_offset_rad;
@@ -1507,6 +1515,18 @@ void MC_MotionLoop_1kHz(void)
         params_save();
     }
 
+    /* Set mechanical zero to a COMMANDED value (SET_MECH_ZERO_AT): the tool supplies mech_zero_set_rad
+       -- e.g. the midpoint of two captured travel extremes -- so the home is centred without driving
+       the axis there. Same absolute (multi-turn) frame as the capture. Auto-saved. (ADR-022) */
+    if (s_set_zero_at_pending)
+    {
+        s_set_zero_at_pending      = false;
+        s_home_offset_rad          = g_od.mech_zero_set_rad;
+        g_mc_debug.home_offset_rad = s_home_offset_rad;
+        s_homed                    = true;
+        params_save();
+    }
+
     od_mirror_live();   /* publish live state into the OD store */
 }
 
@@ -1530,6 +1550,12 @@ void MC_SlowLoop_10_100Hz(void)
     {
         g_mc_inject.request_set_mech_zero = true;
         g_od.cal_status  = MC_IF_CAL_SET_MECH_ZERO;   /* accepted; echoes the last command */
+        g_od.cal_command = MC_IF_CAL_NONE;
+    }
+    if (g_od.cal_command == MC_IF_CAL_SET_MECH_ZERO_AT)   /* set mech home to mech_zero_set_rad (0x2700:10, ADR-022) */
+    {
+        s_set_zero_at_pending = true;
+        g_od.cal_status  = MC_IF_CAL_SET_MECH_ZERO_AT;
         g_od.cal_command = MC_IF_CAL_NONE;
     }
     if (g_od.cal_command == MC_IF_CAL_ALIGN_CAPTURE)

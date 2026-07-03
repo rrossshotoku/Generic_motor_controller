@@ -76,9 +76,10 @@ typedef struct
     float    cal_align_current_a;                     /* 0x2700:3 electrical-align current [A] (PERSIST) */
     uint16_t cal_align_hold_ms;                       /* 0x2700:4 electrical-align hold [ms] (PERSIST) */
     float    home_velocity_rad_s;                     /* 0x2700:6 homing approach velocity, signed (ADR-057) */
-    float    home_current_a;                          /* 0x2700:7 homing stall-detect current [A] (ADR-057) */
+    float    home_current_a;                          /* 0x2700:7 DEPRECATED (ADR-057 build 80): unused -- homing uses no-movement + OC trip */
     uint8_t  home_command;                            /* 0x2700:8 1 = run homing, 0 = idle/abort (ADR-057) */
     uint8_t  home_status;                             /* 0x2700:9 RO 0=idle 1=running 2=done 3=failed (ADR-057) */
+    float    mech_zero_set_rad;                       /* 0x2700:10 target for SET_MECH_ZERO_AT (midpoint-of-travel centering, ADR-022) */
     uint16_t store_save_command;                     /* 0x2800:1 */
 
     /* --- Telemetry (RO; mirrored from the live control state) --- */
