@@ -9,7 +9,7 @@
  *  Typed lookup/read/write with access, type, size and range checks and optional callbacks.
  *
  *  The table is GENERATED from the shared canonical map MC_IF_OD_OBJECTS(X)
- *  (../Lightweight_CMC/Interface/mc_if_od.h), filtered to MC_IF_OWNER_MOTOR entries and bound to
+ *  (../Generic_axis_controller/Generic_axis_controller/Interface/mc_if_od.h), filtered to MC_IF_OWNER_MOTOR entries and bound to
  *  @ref g_od by field name. The contract is therefore the single source of truth, and drift is
  *  caught at COMPILE TIME: a motor-owned entry whose `name` has no matching g_od field fails to
  *  compile (&g_od.<name>), and type/access/PDO/PERSIST follow the contract automatically. CMC-owned
@@ -55,8 +55,11 @@ _Static_assert((int)MC_IF_A_RO == (int)MC_OD_ACCESS_RO && (int)MC_IF_A_WO == (in
     { (idx), (sub), (MC_OdType_t)(type), (MC_OdAccess_t)(acc), &g_od.name, OD_TSIZE(type), \
       0.0f, 0.0f, (((flags) & MC_IF_F_PDO) != 0), (((flags) & MC_IF_F_PERSIST) != 0), 0, 0 },
 
-/* Owner dispatch: MOTOR entries emit a row (unless skipped); CMC (0x3xxx) entries vanish. */
-#define OD_ROW_MC_IF_OWNER_CMC(idx, sub, name, type, acc, flags)   /* not built on the motor */
+/* Owner dispatch: MOTOR entries emit a row (unless skipped); CMC (0x3xxx) and BOOTLOADER (0x1F5x)
+   entries vanish -- the app serves neither. Bootloader-owned entries belong to the separate bootloader
+   binary (contract v5 / REQ-0015); the running app just skips them. */
+#define OD_ROW_MC_IF_OWNER_CMC(idx, sub, name, type, acc, flags)        /* not built on the motor app */
+#define OD_ROW_MC_IF_OWNER_BOOTLOADER(idx, sub, name, type, acc, flags) /* served by the bootloader binary, not the app */
 #define OD_ROW_MC_IF_OWNER_MOTOR(idx, sub, name, type, acc, flags) \
     OD_PASTE(OD_EMIT_, OD_IS_SKIP(name))(idx, sub, name, type, acc, flags)
 #define OD_ROW(idx, sub, name, type, acc, flags, owner) \
@@ -147,7 +150,7 @@ void MC_OdStore_LoadDefaults(void)
     /* Electrical-alignment routine defaults (ADR-024). */
     g_od.cal_align_current_a = 1.0f;     /* d-axis align current [A] */
     g_od.cal_align_hold_ms   = 1500u;    /* drive/hold duration [ms] */
-    g_od.home_velocity_rad_s = -1.0f;    /* 0x2700:6 homing: gentle negative approach -- SET FOR YOUR AXIS (ADR-057) */
+    g_od.home_velocity_rad_s = -0.3f;    /* 0x2700:6 homing approach velocity [rad/s], PERSISTED; sign = direction -- SET FOR YOUR AXIS (ADR-057) */
     g_od.home_current_a      = 2.0f;     /* 0x2700:7 homing: stall-detect current [A] -- SET FOR YOUR AXIS (ADR-057) */
     g_od.home_command        = 0u;       /* idle */
     g_od.mech_zero_set_rad   = 0.0f;     /* 0x2700:10 mech-zero target for SET_MECH_ZERO_AT (ADR-022) */

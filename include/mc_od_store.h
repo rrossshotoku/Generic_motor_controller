@@ -9,7 +9,7 @@
  *  The OD table (mc_od.c) binds its entries to fields of @ref g_od. Gains/config/commands are RW
  *  (written via OD, seeded with defaults, applied to the live controllers by the scheduler);
  *  telemetry is RO (mirrored from the live control state each cycle). This is the first,
- *  tuning-focused subset of the shared map (../Lightweight_CMC/Interface/mc_if_od.h); the
+ *  tuning-focused subset of the shared map (../Generic_axis_controller/Generic_axis_controller/Interface/mc_if_od.h); the
  *  CiA-402 standard objects and the 0x2A00 telemetry map land with the SPI-slave transport and
  *  the mode manager. See ADR-015.
  */

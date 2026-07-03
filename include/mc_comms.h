@@ -6,7 +6,7 @@
 /** @file mc_comms.h
  *  @brief Inter-MCU SPI protocol handler (HAL-free) — slave side. See ADR-016.
  *
- *  Implements the shared contract (../Lightweight_CMC/Interface/mc_if_protocol.h + mc_if_od.h):
+ *  Implements the shared contract (../Generic_axis_controller/Generic_axis_controller/Interface/mc_if_protocol.h + mc_if_od.h):
  *  decode a received 64-byte frame, dispatch cyclic commands and OD read/write to the OD, build
  *  the cyclic telemetry frame (with the configurable 0x2A00 map), and the command dead-man
  *  watchdog. The SPI2 DMA wiring lives in the STM32 boundary (mc_spi_slave_stm32g474.c, F2b);

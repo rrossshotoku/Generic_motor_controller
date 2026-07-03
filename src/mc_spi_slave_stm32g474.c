@@ -1,6 +1,6 @@
 #include "mc_spi_slave.h"
 #include "mc_comms.h"        /* MC_Comms_* */
-#include "mc_if_protocol.h"  /* MC_IF_FRAME_SIZE (shared contract; add ../Lightweight_CMC/Interface to include path) */
+#include "mc_if_protocol.h"  /* MC_IF_FRAME_SIZE (shared contract; add ../Generic_axis_controller/Generic_axis_controller/Interface to include path) */
 #include "spi.h"             /* HAL: hspi2 -- boundary module */
 
 /** @file mc_spi_slave_stm32g474.c

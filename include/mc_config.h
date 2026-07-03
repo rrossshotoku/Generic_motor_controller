@@ -14,7 +14,7 @@
 #define MC_SLOW_DT_S           (1.0f / (float)MC_SLOW_LOOP_HZ)
 
 /* SPI protocol constants live in the shared contract
-   (../Lightweight_CMC/Interface/mc_if_protocol.h): MC_IF_PROTOCOL_VERSION, MC_IF_MAX_PAYLOAD.
+   (../Generic_axis_controller/Generic_axis_controller/Interface/mc_if_protocol.h): MC_IF_PROTOCOL_VERSION, MC_IF_MAX_PAYLOAD.
    The former MC_SPI_PROTOCOL_VERSION / MC_SPI_MAX_PAYLOAD here were stale duplicates (REQ-0006). */
 
 #define MC_ENABLE_COMMISSIONING_STEP_TESTS (1u)

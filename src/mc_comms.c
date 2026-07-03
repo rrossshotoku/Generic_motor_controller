@@ -1,5 +1,5 @@
 #include "mc_comms.h"
-#include "mc_if_protocol.h"   /* shared contract (add ../Lightweight_CMC/Interface to the include path) */
+#include "mc_if_protocol.h"   /* shared contract (add ../Generic_axis_controller/Generic_axis_controller/Interface to the include path) */
 #include "mc_if_od.h"
 #include "mc_od.h"            /* command apply + status now go through the OD (no harness coupling) */
 #include <string.h>

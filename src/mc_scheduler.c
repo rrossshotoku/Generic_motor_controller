@@ -414,7 +414,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 82u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 84u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058/061): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
