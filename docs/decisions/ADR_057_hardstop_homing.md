@@ -20,12 +20,16 @@ routine, a future second trigger):
   The stop is detected by **movement going negligible** (build 80): once the axis has actually moved
   (`|velocity| > MC_HOME_STILL_EPS` = 0.01 rad/s — *armed*, so the initial ramp from rest can't be mistaken
   for the stop), a run of `|velocity| < MC_HOME_STILL_EPS` lasting `MC_HOME_STILL_MS` (**1000 ms**) **OR the
-  OC trip firing** confirms the end stop. It captures the current position as the encoder zero
-  (`s_home_offset_rad = position`, like set-mech-zero, auto-saved), **clears the OC trip if that was the
-  trigger** (axis stays usable), and stops → **DONE**. Any *stale* OC trip is **cleared at start** so a
-  latched trip can't instantly "find" the stop. `MC_HOME_TIMEOUT_MS` (30 s) safety abort covers "never
-  settles / trips" → **FAILED**. Zero = the stop (no back-off). `home_command = 0` aborts / clears a
-  latched DONE/FAILED.
+  OC trip firing** confirms the end stop. On finding it (build 86) the motor **captures the encoder zero
+  right there — at the hard stop** (`s_home_offset_rad = position`; the stop is the datum, position 0),
+  **clears the OC trip if that was the trigger**, then **backs off** — drives the OPPOSITE direction
+  (ramped, same `vel_slew_limit`) for `MC_HOME_BACKOFF_MS` (**1000 ms**) — auto-saves and stops → **DONE**.
+  The axis is left backed off *clear of* the stop; when position mode re-engages, the hold-on-enable
+  latches the hold at the current (backed-off) position (`s_pos_hold_rad = p_act`), so it holds off the
+  stop rather than driving 0 back into it (which would fight the hard stop). Any *stale* OC trip is **cleared
+  at start** so a latched trip can't instantly "find" the stop. `MC_HOME_TIMEOUT_MS` (30 s) safety abort
+  (checked during the approach) covers "never settles / trips" → **FAILED**. `home_command = 0` aborts /
+  clears a latched DONE/FAILED.
 - Uses the velocity loop, so it needs the quad feedback (`0x2500:8`). Push force is bounded by the
   velocity current limit (`0x2300:4`); the OC trip (`current_trip_a`, `0x2600:2`) is the current-based
   backstop.

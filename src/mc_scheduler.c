@@ -73,9 +73,11 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
 #define MC_HOLD_RELEASE_TICKS 1000u  /* settle time before holding-current release [ms @ 1 kHz medium loop] (ADR-054) */
 #define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
 #define MC_HOME_STILL_MS   1000u   /* end stop confirmed after movement stays negligible this long [ms @ 1 kHz] (ADR-057) */
+#define MC_HOME_BACKOFF_MS 1000u   /* after finding the stop, drive the OPPOSITE way this long, then zero there [ms @ 1 kHz] (ADR-057) */
 #define MC_HOME_STILL_EPS  0.01f   /* |mechanical velocity| below this counts as "not moving" [rad/s] (ADR-057) */
 #define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if it never settles / trips [ms @ 1 kHz] (ADR-057) */
 static bool s_oc_trip;      /* latched over-current trip */
+static uint32_t s_fault_flags_prev; /* previous fault_flags -> per-fault rising-edge counts (ADR-058) */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
 
 /* Electrical-alignment routine (ADR-024): current-regulated open-loop drive at electrical angle 0. */
@@ -109,6 +111,8 @@ static uint32_t                      s_hold_settle_ticks; /* settle counter for 
 static uint32_t                      s_home_still_ticks;  /* homing no-movement dwell counter (ADR-057) */
 static uint32_t                      s_home_total_ticks;  /* homing elapsed-time counter for the timeout (ADR-057) */
 static bool                          s_home_moved;        /* homing: axis has moved -> arm the no-movement detector (ADR-057) */
+static bool                          s_home_backing_off;  /* homing: stop found -> now in the back-off phase (ADR-057) */
+static uint32_t                      s_home_backoff_ticks;/* homing back-off dwell counter (ADR-057) */
 static bool                          s_set_zero_at_pending; /* deferred SET_MECH_ZERO_AT: apply mech_zero_set_rad in the medium loop (ADR-022) */
 static bool                          s_homed;             /* incremental encoder zeroed this power-cycle (NOT persisted; gates position recalls) (ADR-057) */
 
@@ -395,6 +399,12 @@ static void od_mirror_live(void)
                          | ((!s_pos_sample.absolute && !s_homed) ? MC_IF_FAULT_NOT_HOMED : 0u)  /* ADR-057 */
                          | (s_oc_trip ? MC_IF_FAULT_OVERCURRENT : 0u);                    /* ADR-058: OC trip as a fault bit */
     g_od.fault_flags_latched |= g_od.fault_flags;   /* sticky since-boot fault history (ADR-058) */
+    /* Per-fault since-boot trigger counts: bump on each fault bit's RISING edge (saturating U16). */
+    const uint32_t fault_rising = g_od.fault_flags & ~s_fault_flags_prev;
+    if ((fault_rising & MC_IF_FAULT_NO_CONFIG)   && g_od.fault_count_no_config   != 0xFFFFu) { g_od.fault_count_no_config++; }
+    if ((fault_rising & MC_IF_FAULT_NOT_HOMED)   && g_od.fault_count_not_homed   != 0xFFFFu) { g_od.fault_count_not_homed++; }
+    if ((fault_rising & MC_IF_FAULT_OVERCURRENT) && g_od.fault_count_overcurrent != 0xFFFFu) { g_od.fault_count_overcurrent++; }
+    s_fault_flags_prev = g_od.fault_flags;
     /* motor_resistance/inductance (0x2000:3,4) are now config inputs (applied in od_apply_gains),
        no longer mirrored from the model here -- writing them sticks (ADR-039 R/L promotion). */
     g_od.store_status    = (uint16_t)((MC_PersistentStore_HasValid()   ? MC_IF_STORE_VALID   : 0u)
@@ -414,7 +424,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 84u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058/061): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 87u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058/061): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -980,6 +990,8 @@ void MC_MotionLoop_1kHz(void)
                 s_home_still_ticks = 0u;
                 s_home_total_ticks = 0u;
                 s_home_moved       = false;
+                s_home_backing_off = false;
+                s_home_backoff_ticks = 0u;
                 s_oc_trip          = false;   /* drop any stale latched trip so it can't instantly "find" the stop (ADR-057) */
                 vel_slew_reset(s_est.mechanical.velocity_rad_per_s);   /* ramp the approach from the current velocity (ADR-057) */
             }
@@ -1053,11 +1065,6 @@ void MC_MotionLoop_1kHz(void)
                MC_HOME_TIMEOUT_MS if neither trips. Uses the velocity loop -> needs the quad feedback (0x2500:8). */
             s_dq_test_ticks = 0u;
             s_home_total_ticks++;
-            /* End stop = axis moved, then movement went negligible. Arming on "has moved" keeps the
-               initial ramp-up from rest from being mistaken for the stop. (ADR-057) */
-            const float vmag = fabsf(s_est.mechanical.velocity_rad_per_s);
-            if (vmag > MC_HOME_STILL_EPS) { s_home_moved = true; s_home_still_ticks = 0u; }
-            else if (s_home_moved)        { s_home_still_ticks++; }
 
             s_eff_align       = false;
             s_eff_torque_mode = false;   /* velocity mode */
@@ -1066,27 +1073,59 @@ void MC_MotionLoop_1kHz(void)
             s_eff_iq_cmd      = 0.0f;
             s_eff_id_cmd      = 0.0f;
 
-            if ((s_home_still_ticks >= MC_HOME_STILL_MS) || s_oc_trip)   /* no movement for MC_HOME_STILL_MS OR OC trip -> end stop */
+            if (!s_home_backing_off)
             {
-                s_home_offset_rad          = s_est.mechanical.position_rad;
-                g_mc_debug.home_offset_rad = s_home_offset_rad;
-                params_save();
-                if (s_oc_trip) { s_oc_trip = false; }   /* the trip WAS the stop signal -> consume it so the axis is usable */
-                g_od.home_status = MC_IF_HOME_DONE;
-                s_homed          = true;   /* incremental axis now has a zero -> position recalls allowed (ADR-057) */
-                s_eff_drive      = false;
-                s_eff_vel_cmd    = 0.0f;
+                /* APPROACH: drive to the stop. Detected by no-movement (armed on "has moved" so the
+                   initial ramp-up isn't mistaken for the stop) OR the OC trip. (ADR-057) */
+                const float vmag = fabsf(s_est.mechanical.velocity_rad_per_s);
+                if (vmag > MC_HOME_STILL_EPS) { s_home_moved = true; s_home_still_ticks = 0u; }
+                else if (s_home_moved)        { s_home_still_ticks++; }
+
+                if ((s_home_still_ticks >= MC_HOME_STILL_MS) || s_oc_trip)
+                {
+                    /* Stop found -> capture the encoder zero HERE (at the hard stop = the datum), then
+                       back off before finishing so the axis doesn't hold pressed against the stop (ADR-057). */
+                    s_home_offset_rad          = s_est.mechanical.position_rad;   /* zero = the hard stop */
+                    g_mc_debug.home_offset_rad = s_home_offset_rad;
+                    if (s_oc_trip) { s_oc_trip = false; }   /* consume the trip so the back-off can drive */
+                    s_home_backing_off   = true;
+                    s_home_backoff_ticks = 0u;
+                    vel_slew_reset(s_est.mechanical.velocity_rad_per_s);   /* ramp the back-off from rest */
+                    s_eff_drive   = true;
+                    s_eff_vel_cmd = 0.0f;   /* the ramp begins next tick, in the back-off branch */
+                }
+                else if (s_home_total_ticks >= MC_HOME_TIMEOUT_MS)  /* safety timeout -> fail (no stop found) */
+                {
+                    g_od.home_status = MC_IF_HOME_FAILED;
+                    s_eff_drive      = false;
+                    s_eff_vel_cmd    = 0.0f;
+                }
+                else                                                /* keep driving toward the stop */
+                {
+                    s_eff_drive   = true;
+                    s_eff_vel_cmd = vel_slew_limit(g_od.home_velocity_rad_s);   /* ramp the approach (0x2300:6/7/8, ADR-042) */
+                }
             }
-            else if (s_home_total_ticks >= MC_HOME_TIMEOUT_MS)  /* safety timeout -> fail (no stop found) */
+            else
             {
-                g_od.home_status = MC_IF_HOME_FAILED;
-                s_eff_drive      = false;
-                s_eff_vel_cmd    = 0.0f;
-            }
-            else                                                /* keep driving toward the stop */
-            {
-                s_eff_drive   = true;
-                s_eff_vel_cmd = vel_slew_limit(g_od.home_velocity_rad_s);   /* ramp the approach per the accel limits (0x2300:6/7/8, ADR-042) */
+                /* BACK OFF: drive the OPPOSITE direction (ramped) for MC_HOME_BACKOFF_MS, then finish.
+                   The zero is already captured at the stop; backing off parks the axis clear of it, so
+                   when position mode re-engages the hold-on-enable latches s_pos_hold_rad = current and
+                   holds it HERE -- it does not drive 0 back into the stop. (ADR-057) */
+                s_home_backoff_ticks++;
+                if (s_home_backoff_ticks >= MC_HOME_BACKOFF_MS)
+                {
+                    params_save();   /* persist the zero captured at the stop */
+                    g_od.home_status = MC_IF_HOME_DONE;
+                    s_homed          = true;   /* incremental axis now has a zero -> position recalls allowed (ADR-057) */
+                    s_eff_drive      = false;
+                    s_eff_vel_cmd    = 0.0f;
+                }
+                else
+                {
+                    s_eff_drive   = true;
+                    s_eff_vel_cmd = vel_slew_limit(-g_od.home_velocity_rad_s);   /* opposite direction, ramped */
+                }
             }
             g_od.statusword = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
                                        | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);

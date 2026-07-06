@@ -98,6 +98,9 @@ typedef struct
     float    motor_inductance_h;     /* 0x2000:4 */
     uint32_t fault_flags;            /* 0x2600:1 */
     uint32_t fault_flags_latched;    /* 0x2600:10 RO -- sticky OR of fault_flags since boot (fault history, ADR-058) */
+    uint16_t fault_count_no_config;  /* 0x2600:11 RO -- since-boot trigger count, saturating (ADR-058) */
+    uint16_t fault_count_not_homed;  /* 0x2600:12 RO -- since-boot trigger count, saturating (ADR-058) */
+    uint16_t fault_count_overcurrent;/* 0x2600:13 RO -- since-boot trigger count, saturating (ADR-058) */
     uint16_t store_factory_reset;    /* 0x2800:3 */
 
     /* --- CiA-402 standard objects (REQ-0001). RW = stored (mode manager applies later);

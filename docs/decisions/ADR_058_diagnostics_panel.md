@@ -15,11 +15,14 @@ left no trace). The operator had no single place to see motor + CMC health.
 - **Motor:** the OC trip becomes a `fault_flags` bit (`MC_IF_FAULT_OVERCURRENT`), so `fault_flags` is
   now the complete motor fault register. Add **`fault_flags_latched`** (`0x2600:10`, U32 RO) = sticky OR
   of `fault_flags` since boot — the fault history (which faults occurred and were cleared). Since-boot
-  (not persisted).
+  (not persisted). **Per-fault trigger counts (build 87):** `fault_count_no_config` / `_not_homed` /
+  `_overcurrent` (`0x2600:11/12/13`, U16 RO) — how many times each `fault_flags` bit has *risen* since
+  boot (saturating), RAM only.
 - **PC tool:** a **"Diagnostics (faults & state)"** group on the Motor Command tab, polled at 1 Hz:
-  Motor { state (statusword), active faults (`fault_flags`), fault history (`fault_flags_latched`) } and
-  CMC { state (`axis_state`), error (`axis_error_code`/`register`), auto-cleared count
-  (`axis_auto_fault_clears`) }, with a Clear-faults button.
+  Motor { state (statusword), active faults (`fault_flags`), fault history (`fault_flags_latched`),
+  **fault counts** (`0x2600:11/12/13`) } and CMC { state (`axis_state`), error
+  (`axis_error_code`/`register`), auto-cleared count (`axis_auto_fault_clears`) }, with **Refresh**
+  (manual read) and **Clear-faults** buttons.
 
 ## Consequences
 
