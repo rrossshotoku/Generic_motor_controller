@@ -24,6 +24,7 @@ typedef struct
     float    vel_accel_up, vel_accel_dn;             /* 0x2300:6,7 velocity-demand accel ramp caps [rad/s^2] (ADR-042) */
     float    vel_accel_jerk;                         /* 0x2300:8 accel ramp-up jerk [rad/s^3]; 0 = step (ADR-042) */
     uint8_t  holding_enable;                         /* 0x2300:9 1 = hold when stopped (PI provides current); 0 = release after settle (ADR-054) */
+    uint8_t  jog_position_mode;                      /* 0x2300:10 0 = direct velocity jog (default); 1 = position-integrated jog (ADR-062) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
     float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed current PI gains, set directly (ADR-049) */
     float    est_electrical_offset_rad;              /* 0x2500:1 */

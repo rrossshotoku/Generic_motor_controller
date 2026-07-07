@@ -74,6 +74,7 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
 #define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
 #define MC_HOME_STILL_MS   1000u   /* end stop confirmed after movement stays negligible this long [ms @ 1 kHz] (ADR-057) */
 #define MC_HOME_BACKOFF_MS 1000u   /* after finding the stop, drive the OPPOSITE way this long, then zero there [ms @ 1 kHz] (ADR-057) */
+#define MC_JOG_LEASH_RAD   1.0f    /* position-integrated jog: the moving reference may lead the actual by at most this [rad] (ADR-062) */
 #define MC_HOME_STILL_EPS  0.01f   /* |mechanical velocity| below this counts as "not moving" [rad/s] (ADR-057) */
 #define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if it never settles / trips [ms @ 1 kHz] (ADR-057) */
 static bool s_oc_trip;      /* latched over-current trip */
@@ -424,7 +425,7 @@ static void od_mirror_live(void)
 void MC_Framework_Init(void)
 {
     MC_Debug_Init();
-    g_mc_debug.fw_build = 87u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058/061): read in the watch window to confirm the flashed image */
+    g_mc_debug.fw_build = 88u;   /* build/version marker (ADR-038/039/040/042/043/044/045/046/047/048/049/050/051/052/054/056/057/058/061/062): read in the watch window to confirm the flashed image */
     MC_CurrentSense_Init(&s_cs);
     MC_Dac_Init();                         /* start DAC1_OUT1 (PA4) for the debug current scope output */
 
@@ -1153,9 +1154,36 @@ void MC_MotionLoop_1kHz(void)
             }
             else if (ds.active_mode == MC_MODE_PROFILE_VELOCITY)
             {
-                s_eff_torque_mode   = false;
-                s_eff_position_mode = false;
-                s_eff_vel_cmd       = vel_slew_limit(dc.target_velocity_rad_per_s);   /* cyclic velocity_setpoint, accel-ramp limited (ADR-042) */
+                s_eff_torque_mode = false;
+                if (g_od.jog_position_mode == 0u)
+                {
+                    /* Direct velocity (default, ADR-042): the velocity loop tracks the ramped setpoint. */
+                    s_eff_position_mode = false;
+                    s_eff_vel_cmd       = vel_slew_limit(dc.target_velocity_rad_per_s);   /* cyclic velocity_setpoint, accel-ramp limited */
+                }
+                else
+                {
+                    /* Position-integrated jog (ADR-062): integrate the ramped velocity into the position
+                       hold target and let the position cascade (D3) track it -- so following-error,
+                       soft limits and a stiff hold all apply while jogging. D3 latches s_pos_hold_rad =
+                       actual on entry (via s_pos_on); we integrate from there, leashing the reference to
+                       the actual (can't run away from a stuck axis) and clamping it to the soft-limit band. */
+                    s_eff_position_mode = true;
+                    s_traj.active       = false;   /* streaming target, no planned move */
+                    if (s_pos_on)
+                    {
+                        const float jog_vel = vel_slew_limit(dc.target_velocity_rad_per_s);
+                        const float p_act   = s_est.mechanical.position_rad - s_home_offset_rad;
+                        s_pos_hold_rad += jog_vel * MC_MOTION_DT_S;
+                        if      (s_pos_hold_rad > p_act + MC_JOG_LEASH_RAD) { s_pos_hold_rad = p_act + MC_JOG_LEASH_RAD; }
+                        else if (s_pos_hold_rad < p_act - MC_JOG_LEASH_RAD) { s_pos_hold_rad = p_act - MC_JOG_LEASH_RAD; }
+                        if (pos_limits_active())
+                        {
+                            if      (s_pos_hold_rad > g_od.pos_limit_hi_rad) { s_pos_hold_rad = g_od.pos_limit_hi_rad; }
+                            else if (s_pos_hold_rad < g_od.pos_limit_lo_rad) { s_pos_hold_rad = g_od.pos_limit_lo_rad; }
+                        }
+                    }
+                }
             }
             else if (ds.active_mode == MC_MODE_PROFILE_POSITION)
             {
