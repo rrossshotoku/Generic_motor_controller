@@ -117,6 +117,13 @@ void MC_OdStore_LoadDefaults(void)
     g_od.vel_ki = 1000.0f * 0.231f;
     g_od.vel_kd = 0.0f;
     g_od.vel_current_limit_a = 2.5f;
+
+    /* Thermal model (0x2100, ADR-065): off by default. thermal_derate_factor must read 1.0
+       (not the memset 0) so the current-limit scaling is a no-op until a motor is configured;
+       thermal_derate_start defaults to 0.85 (must NOT be the memset 0, else derate would start
+       at x=0 and choke output immediately once the model is enabled). */
+    g_od.thermal_derate_factor = 1.0f;
+    g_od.thermal_derate_start  = 0.85f;
     g_od.vel_load_factor = 1.0f;   /* 0x2300:5 -- no load scaling by default (REQ-0014/ADR-034) */
     g_od.vel_accel_up = 0.0f;  g_od.vel_accel_dn = 0.0f;   /* 0x2300:6,7 velocity accel ramp off by default (ADR-042) */
     g_od.vel_accel_jerk = 0.0f;                            /* 0x2300:8 accel ramp-up jerk off (= plain accel ramp) */

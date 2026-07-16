@@ -19,12 +19,14 @@
 #include "mc_traj_scurve.h" /* jerk-limited S-curve planner, selectable via 0x2600:9 (ADR-045) */
 #include "mc_freq_sweep.h"   /* stepped-sine current sweep for resonance ID, fast-loop injected (ADR-047) */
 #include "mc_notch.h"        /* band-reject on the current command for resonance suppression (ADR-048) */
+#include "mc_thermal.h"      /* winding I²t thermal model + progressive current-limit derate (ADR-065) */
 #include "mc_quad_encoder.h" /* TIM2 quadrature count, mirrored to 0x2510:4 (ADR-050) */
 #include "mc_position_controller.h"
 #include "mc_signal_gen.h"
 #include "mc_od.h"
 #include "mc_od_store.h"
 #include "mc_comms.h"
+#include "mc_boot_meta.h"  /* dual-bootloader healthy-window flag clear (REQ-0015) */
 #include "mc_mode_manager.h"
 #include "mc_if_od.h"      /* MC_IF_*_SCALE, status/mode bits, persistence magics (shared contract) */
 #include "mc_if_protocol.h" /* MC_IF_MOVE_* cyclic-header movement_status bits (REQ-0013/ADR-033) */
@@ -275,7 +277,11 @@ static bool pos_limits_active(void)
 static void od_apply_gains(void)
 {
     const float kt   = g_od.motor_kt_nm_per_a;
-    const float tlim = g_od.vel_current_limit_a * kt;
+    /* Thermal derate (ADR-065): scale the operational current limit by the model's derate
+       factor (1.0 when the model is disabled or cool). The hard OC trip (0x2600:2, applied
+       below) is deliberately NOT derated -- it stays the absolute safety backstop. */
+    const float i_lim = g_od.vel_current_limit_a * MC_Thermal_DerateFactor();
+    const float tlim  = i_lim * kt;
 
     {
         /* vel_load_factor (0x2300:5, REQ-0014/ADR-034): operator load multiplier on the velocity-loop
@@ -292,7 +298,7 @@ static void od_apply_gains(void)
     s_vel_cfg.pid.output_min     = -tlim;  s_vel_cfg.pid.output_max     = tlim;
     s_vel_cfg.pid.integrator_min = -tlim;  s_vel_cfg.pid.integrator_max = tlim;
     s_vel_cfg.torque_output_limit_nm = tlim;
-    s_torque_cfg.current_limit_a        = g_od.vel_current_limit_a;
+    s_torque_cfg.current_limit_a        = i_lim;   /* thermally-derated operational limit (ADR-065) */
     s_torque_cfg.torque_limit_nm        = tlim;
     s_torque_cfg.torque_constant_nm_per_a = kt;
 
@@ -351,6 +357,7 @@ static void od_mirror_live(void)
     g_od.tlm_vq_v                 = g_mc_debug.vq_v;
     g_od.tlm_electrical_angle_rad = g_mc_debug.elec_angle_rad;
     g_od.tlm_i_arm_a              = g_mc_debug.i_arm_a;   /* brushed armature current (0x2410:6) */
+    g_od.tlm_v_arm_v              = g_mc_debug.v_cmd_v;   /* brushed armature voltage cmd (0x2410:7, the vq analog) */
     g_od.tlm_mech_position_rad    = g_mc_debug.mech_position_rad;
     g_od.tlm_mech_velocity_rad_s  = g_mc_debug.mech_velocity_rad_s;
     g_od.tlm_pos_demand_rad       = g_mc_debug.pos_demand_rad;   /* abs position demand (0x2510:3 PDO) -- graph vs 0x6064 */
@@ -398,13 +405,15 @@ static void od_mirror_live(void)
     g_od.error_register  = 0u;
     g_od.fault_flags     = (MC_PersistentStore_HasValid() ? 0u : MC_IF_FAULT_NO_CONFIG)   /* ADR-051 */
                          | ((!s_pos_sample.absolute && !s_homed) ? MC_IF_FAULT_NOT_HOMED : 0u)  /* ADR-057 */
-                         | (s_oc_trip ? MC_IF_FAULT_OVERCURRENT : 0u);                    /* ADR-058: OC trip as a fault bit */
+                         | (s_oc_trip ? MC_IF_FAULT_OVERCURRENT : 0u)                     /* ADR-058: OC trip as a fault bit */
+                         | (MC_Thermal_OverTemp() ? MC_IF_FAULT_OVERTEMP : 0u);          /* ADR-065: thermal backstop */
     g_od.fault_flags_latched |= g_od.fault_flags;   /* sticky since-boot fault history (ADR-058) */
     /* Per-fault since-boot trigger counts: bump on each fault bit's RISING edge (saturating U16). */
     const uint32_t fault_rising = g_od.fault_flags & ~s_fault_flags_prev;
     if ((fault_rising & MC_IF_FAULT_NO_CONFIG)   && g_od.fault_count_no_config   != 0xFFFFu) { g_od.fault_count_no_config++; }
     if ((fault_rising & MC_IF_FAULT_NOT_HOMED)   && g_od.fault_count_not_homed   != 0xFFFFu) { g_od.fault_count_not_homed++; }
     if ((fault_rising & MC_IF_FAULT_OVERCURRENT) && g_od.fault_count_overcurrent != 0xFFFFu) { g_od.fault_count_overcurrent++; }
+    if ((fault_rising & MC_IF_FAULT_OVERTEMP)    && g_od.fault_count_overtemp    != 0xFFFFu) { g_od.fault_count_overtemp++; }
     s_fault_flags_prev = g_od.fault_flags;
     /* motor_resistance/inductance (0x2000:3,4) are now config inputs (applied in od_apply_gains),
        no longer mirrored from the model here -- writing them sticks (ADR-039 R/L promotion). */
@@ -552,7 +561,9 @@ void MC_Framework_Init(void)
 
     /* Object dictionary: seed defaults (its gains match the configs seeded above). */
     MC_Od_Init();
+    MC_Thermal_Init();      /* winding I²t thermal model (ADR-065); safe disabled default */
     MC_Comms_Init();        /* SPI protocol handler (transport DMA wired in F2b) */
+    MC_BootMeta_Init();     /* read boot flag; arm the healthy-window flag clear (REQ-0015) */
     MC_ModeManager_Init();  /* CiA-402 drive state machine (E1) */
 
     /* Load persisted calibration + gains, retrying so an unlikely transient at cold boot can't silently
@@ -1599,6 +1610,12 @@ void MC_MotionLoop_1kHz(void)
 
 void MC_SlowLoop_10_100Hz(void)
 {
+    /* Dual-bootloader: once the app has run healthy for MC_BOOT_META_HEALTHY_MS,
+       clear the STAY flag so subsequent reboots go straight to the app. If the
+       app crashes before then, the flag stays STAY -> next boot re-enters the
+       bootloader (brick-proof, REQ-0015). */
+    MC_BootMeta_Tick();
+
     /* OD-triggered persistence commands (0x2800), via the shared magics. */
     if (g_od.store_factory_reset == MC_IF_FACTORY_RESET_MAGIC)
     {
@@ -1675,6 +1692,20 @@ void MC_SlowLoop_10_100Hz(void)
     }
     g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
 
+    /* Winding thermal model (ADR-065): advance the I²t estimate at the slow rate (100 Hz) from
+       the measured motor-current magnitude, then mirror utilisation + derate to the OD (0x2100:4/5).
+       Backend-aware current: |i_arm| for brushed, sqrt(id^2+iq^2) for FOC. Must run before
+       od_apply_gains() so the derated current limit is applied this tick. */
+    {
+        const float i_thermal = (g_od.motor_backend_sel == 1u)
+            ? fabsf(g_od.tlm_i_arm_a)
+            : sqrtf(g_od.tlm_id_meas_a * g_od.tlm_id_meas_a + g_od.tlm_iq_meas_a * g_od.tlm_iq_meas_a);
+        MC_Thermal_SetParams(g_od.thermal_enable != 0u, g_od.thermal_i_cont_a, g_od.thermal_tau_s,
+                             g_od.thermal_derate_start);
+        MC_Thermal_Update(i_thermal, MC_MOTION_DT_S * 10.0f);   /* slow loop = 1 kHz / 10 = 100 Hz */
+        g_od.thermal_utilisation   = MC_Thermal_Utilisation();
+        g_od.thermal_derate_factor = MC_Thermal_DerateFactor();
+    }
     od_apply_gains();   /* apply OD-written gains to the live controllers (safe update point) */
 
     /* Inter-MCU command dead-man (REMOTE mode only): a stale cyclic-command stream zeroes the

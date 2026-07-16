@@ -73,7 +73,12 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  /* Dual-bootloader (REQ-0015 / ADR-064): this app is linked at 0x08008800 and
+     is launched by the bootloader, which sets VTOR before jumping. Set VTOR here
+     too so interrupts route to the app's vector table regardless of how execution
+     arrived (e.g. a standalone debugger load). Must run before HAL_Init enables
+     SysTick. */
+  SCB->VTOR = 0x08008800u;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -129,6 +134,18 @@ int main(void)
      comms. The pipelined double-buffer (mc_spi_slave) keeps the re-arm prompt without an inverted
      priority; master-side frame-burst discipline is a network-MCU concern (see ADR-016). */
   MC_SpiSlave_Init();                     /* arm the inter-MCU SPI2-slave DMA (F2b) */
+
+  /* Heartbeat LED on PB11 (push-pull output) -- toggled in the main loop below
+     as a "code is running" indicator: 1 s on / 1 s off (2 s period, 50% duty).
+     GPIOB clock is already enabled by MX_GPIO_Init. */
+  {
+    GPIO_InitTypeDef led = {0};
+    led.Pin   = GPIO_PIN_11;
+    led.Mode  = GPIO_MODE_OUTPUT_PP;
+    led.Pull  = GPIO_NOPULL;
+    led.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &led);
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -138,6 +155,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Heartbeat: PB11 high for the 2nd half of each 2 s window, low for the 1st
+       (HAL_GetTick()/1000 alternates 0/1 every second). */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11,
+                      ((HAL_GetTick() / 1000u) & 1u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     MC_Sched_ServiceBackground();
   }
   /* USER CODE END 3 */

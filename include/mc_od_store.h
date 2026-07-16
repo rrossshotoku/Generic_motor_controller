@@ -42,6 +42,10 @@ typedef struct
     float    motor_kt_nm_per_a, motor_inertia_kg_m2; /* 0x2000:1,2 */
     uint16_t motor_pole_pairs;                       /* 0x2000:5 */
     uint8_t  motor_backend_sel;                      /* 0x2000:6 (0=BLDC/FOC, 1=brushed H-bridge; ADR-039) */
+    uint8_t  thermal_enable;                         /* 0x2100:1 1 = run the winding thermal (I²t) model + derate (ADR-065) */
+    float    thermal_i_cont_a;                       /* 0x2100:2 continuous current rating / steady-state limit [A] (ADR-065) */
+    float    thermal_tau_s;                          /* 0x2100:3 thermal time constant [s]; 0 = no burst tolerance (ADR-065) */
+    float    thermal_derate_start;                   /* 0x2100:6 utilisation x where derate begins (default 0.85; clamped [0,0.99]) (ADR-065) */
 
     /* --- Commands (RW; placeholders until wired to mode manager / inject path) --- */
     uint8_t  inject_enable, inject_target, inject_step_trigger; /* 0x2900 */
@@ -87,10 +91,13 @@ typedef struct
     float    tlm_vel_demand_rad_s, tlm_vel_actual_rad_s, tlm_vel_iq_cmd_a;   /* 0x2310 */
     float    tlm_id_meas_a, tlm_iq_meas_a, tlm_vd_v, tlm_vq_v, tlm_electrical_angle_rad; /* 0x2410:1-5 */
     float    tlm_i_arm_a;                            /* 0x2410:6 brushed armature current (ADR-039) */
+    float    tlm_v_arm_v;                            /* 0x2410:7 brushed armature voltage command (v_cmd; the vq analog for a DC drive) (ADR-039) */
     float    tlm_mech_position_rad, tlm_mech_velocity_rad_s;                 /* 0x2510:1,2 */
     float    tlm_pos_demand_rad;                                            /* 0x2510:3 PDO -- absolute (home-relative) position demand */
     int32_t  quad_encoder_count;                                           /* 0x2510:4 PDO -- raw TIM2 quadrature count (ADR-050) */
     float    tlm_bus_voltage_v;                                              /* 0x2600:3 */
+    float    thermal_utilisation;    /* 0x2100:4 RO PDO -- thermal x (0=cold, 1=at limit); telemetry-mappable/graphable (ADR-065) */
+    float    thermal_derate_factor;  /* 0x2100:5 RO PDO -- current-limit multiplier 0..1; telemetry-mappable/graphable (ADR-065) */
     uint16_t cal_status, store_status;
     uint16_t cal_done_flags;         /* 0x2700:5 RO -- calibration-completeness bitfield (ADR-026) */
 
@@ -102,6 +109,7 @@ typedef struct
     uint16_t fault_count_no_config;  /* 0x2600:11 RO -- since-boot trigger count, saturating (ADR-058) */
     uint16_t fault_count_not_homed;  /* 0x2600:12 RO -- since-boot trigger count, saturating (ADR-058) */
     uint16_t fault_count_overcurrent;/* 0x2600:13 RO -- since-boot trigger count, saturating (ADR-058) */
+    uint16_t fault_count_overtemp;   /* 0x2600:14 RO -- since-boot trigger count, saturating (ADR-065) */
     uint16_t store_factory_reset;    /* 0x2800:3 */
 
     /* --- CiA-402 standard objects (REQ-0001). RW = stored (mode manager applies later);

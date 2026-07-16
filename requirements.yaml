@@ -93,3 +93,13 @@ motor_model_default:                                        # ADR-004
   inductance_h: 0.00107
   kt_nm_per_a: 0.231
   rotor_inertia_kg_m2: 0.000506
+motor_thermal_model:                                        # ADR-065
+  model: first_order_i2t                                    # dx/dt = (1/tau)*((I/I_cont)^2 - x); x = utilisation 0..1
+  parameters: [i_cont_a, tau_s]                             # only two; steady-state limit + time constant
+  sensor: model_only_current_based                          # no temperature sensor at runtime
+  over_temp_response: progressive_derate                    # limit mult 1 @x<=0.85 -> 0 @x=1.0
+  fault: overtemp_backstop                                  # MC_IF_FAULT_OVERTEMP 0x8 @x>=1.05 (clear 1.0); count 0x2600:14
+  od_block: 0x2100                                          # :1 enable :2 i_cont_a :3 tau_s :4 utilisation(RO) :5 derate(RO)
+  spec_conversion: pc_tool_calculator                       # continuous -> direct; duty -> tau=t_off/N, I_cont solved
+  runtime: slow_loop_100hz                                  # derate applied in od_apply_gains; hard OC trip not derated
+  default: disabled                                         # enable=0 -> no derate/fault until configured

@@ -1,0 +1,172 @@
+07:58:53:716 : UR connection mode is defined with the HWrst reset mode
+07:58:53:765 : ST-LINK SN  : 37FF72064D4E383551400643
+07:58:53:765 : ST-LINK FW  : V2J46S7
+07:58:53:765 : Board       : --
+07:58:53:765 : Voltage     : 3.22V
+07:58:53:765 : SWD freq    : 4000 KHz
+07:58:53:765 : Connect mode: Under Reset
+07:58:53:765 : Reset mode  : Hardware reset
+07:58:53:766 : Device ID   : 0x469
+07:58:53:766 : Revision ID : Rev X
+07:58:53:766 : Reading data...
+07:58:53:766 : r ap 0 @0x40022020 0x00000004 bytes Data 0xFFEFF8AA
+07:58:53:766 : Reading data...
+07:58:53:766 : r ap 0 @0x40022020 0x00000004 bytes Data 0xFFEFF8AA
+07:58:53:766 : Reading data...
+07:58:53:766 : r ap 0 @0x1FFF75E0 0x00000004 bytes Data 0xFFFF0200
+07:58:53:766 : Database: Config 1 is active.
+07:58:53:766 : flash loader C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin/FlashLoader/0x469.stldr is loaded
+07:58:53:766 : Disable WDG
+07:58:53:766 : r ap 0 @0xE0042004 0x00000004 bytes Data 0x00000006
+07:58:53:766 : w ap 0 @0xE0042004 0x00000004 bytes Data 0x00000006
+07:58:53:766 : r ap 0 @0xE0042008 0x00000004 bytes Data 0x00001800
+07:58:53:766 : w ap 0 @0xE0042008 0x00000004 bytes Data 0x00001800
+07:58:53:766 : Debug in Low Power mode enabled.
+07:58:53:766 : r ap 0 @0xE0042004 0x00000004 bytes Data 0x00000006
+07:58:53:766 : w ap 0 @0xE0042004 0x00000004 bytes Data 0x00000006
+07:58:53:767 : r ap 0 @0xE0042008 0x00000004 bytes Data 0x00001800
+07:58:53:767 : w ap 0 @0xE0042008 0x00000004 bytes Data 0x00001800
+07:58:53:767 : Reading data...
+07:58:53:767 : r ap 0 @0x1FFF75E0 0x00000004 bytes Data 0xFFFF0200
+07:58:53:767 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:53:965 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:53:965 : UPLOADING OPTION BYTES DATA ...
+07:58:53:965 :   Bank          : 0x00
+07:58:53:965 :   Address       : 0x40022020
+07:58:53:965 :   Size          : 20 Bytes
+07:58:53:965 : Reading data...
+07:58:53:965 : r ap 0 @0x40022020 0x00000014 bytes Data 0xFFEFF8AA
+07:58:53:966 :   Bank          : 0x01
+07:58:53:966 :   Address       : 0x40022044
+07:58:53:966 :   Size          : 16 Bytes
+07:58:53:966 : Reading data...
+07:58:53:966 : r ap 0 @0x40022044 0x00000010 bytes Data 0xFFFFFFFF
+07:58:53:966 :   Bank          : 0x02
+07:58:53:966 :   Address       : 0x40022070
+07:58:53:966 :   Size          : 8 Bytes
+07:58:53:966 : Reading data...
+07:58:53:966 : r ap 0 @0x40022070 0x00000008 bytes Data 0xFFFEFF00
+07:58:53:967 : UPLOADING OPTION BYTES DATA ...
+07:58:53:967 :   Bank          : 0x00
+07:58:53:967 :   Address       : 0x40022020
+07:58:53:967 :   Size          : 20 Bytes
+07:58:53:967 : Reading data...
+07:58:53:967 : r ap 0 @0x40022020 0x00000014 bytes Data 0xFFEFF8AA
+07:58:53:967 :   Bank          : 0x01
+07:58:53:967 :   Address       : 0x40022044
+07:58:53:967 :   Size          : 16 Bytes
+07:58:53:967 : Reading data...
+07:58:53:967 : r ap 0 @0x40022044 0x00000010 bytes Data 0xFFFFFFFF
+07:58:53:968 :   Bank          : 0x02
+07:58:53:968 :   Address       : 0x40022070
+07:58:53:968 :   Size          : 8 Bytes
+07:58:53:968 : Reading data...
+07:58:53:968 : r ap 0 @0x40022070 0x00000008 bytes Data 0xFFFEFF00
+07:58:53:968 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:53:968 : UPLOADING ...
+07:58:53:968 :   Size          : 1024 Bytes
+07:58:53:968 :   Address       : 0x8000000
+07:58:53:968 : Read progress:
+07:58:53:968 : Reading data...
+07:58:53:969 : r ap 0 @0x08000000 0x00000400 bytes Data 0x20020000
+07:58:53:969 : Data read successfully
+07:58:53:969 : Time elapsed during the read operation is: 00:00:00.007
+07:58:53:969 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:54:961 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:55:966 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:56:973 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:57:978 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:58:985 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:58:59:683 : Opening and parsing file: boot.elf
+07:58:59:683 : Memory Programming ...
+07:58:59:683 :   File          : boot.elf
+07:58:59:691 :   Size          : 18.48 KB 
+07:58:59:691 :   Address       : 0x08000000 
+07:58:59:692 : Download in Progress:
+07:58:59:692 :   Size          : 18928 Bytes
+07:58:59:692 :   Address       : 0x08000000 
+07:58:59:692 : Buffer program...
+07:58:59:696 : halt ap 0 
+07:58:59:697 : w ap 0 reg 15 PC   (0x20000000)  
+07:58:59:697 : w ap 0 reg 17 MSP  (0x20000500)  
+07:58:59:697 : w ap 0 reg 16 xPSR (0x01000000)  
+07:58:59:700 : w ap 0 @0x20000C60 : 0x00000200 bytes, Data 0x00000000...
+07:58:59:700 : w ap 0 @0x20000000 : 0x00000004 bytes, Data 0x0000BE00...
+07:58:59:713 : w ap 0 @0x20000004 : 0x00000834 bytes, Data 0xB672B580...
+07:58:59:713 : Loader write range...
+07:58:59:777 : w ap 0 @0x20000C60 : 0x000024F8 bytes, Data 0x20020000...
+07:58:59:777 : W B1 in RAM @0x20000C60 size 0x000024F8 : 0064ms
+07:58:59:777 : Init flashloader...
+07:58:59:779 : halt ap 0 
+07:58:59:779 : w ap 0 reg 0 R0   0x00000001
+07:58:59:779 : w ap 0 reg 1 R1   0x00000000
+07:58:59:780 : w ap 0 reg 2 R2   0x00000000
+07:58:59:781 : w ap 0 reg 3 R3   0x00000000
+07:58:59:781 : w ap 0 reg 4 R4   0x00000000
+07:58:59:781 : w ap 0 reg 5 R5   0x00000000
+07:58:59:782 : w ap 0 reg 6 R6   0x00000000
+07:58:59:783 : w ap 0 reg 7 R7   0x00000000
+07:58:59:783 : w ap 0 reg 8 R8   0x00000000
+07:58:59:783 : w ap 0 reg 9 R9   0x00000000
+07:58:59:784 : w ap 0 reg 10 R10  0x00000000
+07:58:59:784 : w ap 0 reg 11 R11  0x00000000
+07:58:59:784 : w ap 0 reg 12 R12  0x00000000
+07:58:59:785 : w ap 0 reg 13 SP   0x00000000
+07:58:59:785 : w ap 0 reg 14 LR   0x20000001
+07:58:59:786 : w ap 0 reg 15 PC   0x20000005
+07:58:59:786 : w ap 0 reg 16 xPSR 0x01000000
+07:58:59:787 : w ap 0 reg 17 MSP  0x20000C34
+07:58:59:787 : w ap 0 reg 18 PSP  0x00000000
+07:58:59:787 : run ap 0 
+07:58:59:789 : halt ap 0 
+07:58:59:789 : r ap 0 reg 0 R0   0x00000001
+07:58:59:789 : w ap 0 reg 0 R0   0x08000000
+07:58:59:789 : w ap 0 reg 1 R1   0x000024F8
+07:58:59:791 : w ap 0 reg 2 R2   0x20000C60
+07:58:59:791 : w ap 0 reg 3 R3   0x00000002
+07:58:59:791 : w ap 0 reg 4 R4   0x00000000
+07:58:59:792 : w ap 0 reg 5 R5   0x00000000
+07:58:59:792 : w ap 0 reg 6 R6   0x00000000
+07:58:59:792 : w ap 0 reg 7 R7   0x00000000
+07:58:59:793 : w ap 0 reg 8 R8   0x00000000
+07:58:59:794 : w ap 0 reg 9 R9   0x00000000
+07:58:59:794 : w ap 0 reg 10 R10  0x00000000
+07:58:59:794 : w ap 0 reg 11 R11  0x00000000
+07:58:59:795 : w ap 0 reg 12 R12  0x00000000
+07:58:59:795 : w ap 0 reg 13 SP   0x00000000
+07:58:59:796 : w ap 0 reg 14 LR   0x20000001
+07:58:59:796 : w ap 0 reg 15 PC   0x20000053
+07:58:59:797 : w ap 0 reg 16 xPSR 0x01000000
+07:58:59:797 : w ap 0 reg 17 MSP  0x20000C34
+07:58:59:797 : w ap 0 reg 18 PSP  0x00000000
+07:58:59:797 : run ap 0 
+07:58:59:862 : w ap 0 @0x20003158 : 0x000024F8 bytes, Data 0x60F8AF00...
+07:58:59:862 : W B2 in RAM @0x2000C460 size 0x000024F8: 0084ms
+07:58:59:863 : r ap 0 reg 0 R0   0x00000000
+07:58:59:865 : halt ap 0 
+07:58:59:865 : w ap 0 reg 15 PC   (0x20000000)  
+07:58:59:866 : w ap 0 reg 17 MSP  (0x20000500)  
+07:58:59:866 : w ap 0 reg 16 xPSR (0x01000000)  
+07:58:59:867 : Loader write range...
+07:58:59:931 : w ap 0 @0x20000C60 : 0x000024F8 bytes, Data 0x20020000...
+07:58:59:932 : W B1 in RAM @0x20000C60 size 0x000024F8 : 0064ms
+07:58:59:934 : halt ap 0 
+07:58:59:934 : r ap 0 reg 0 R0   0x00000000
+07:58:59:935 : Error: failed to download  Sector[0]
+07:58:59:935 : Error: failed to download the File
+07:58:59:952 : RUNNING Program ... 
+07:58:59:952 :   Address:      : 0x08000000
+07:58:59:954 : w ap 0 reg 15 PC   0x08004829
+07:58:59:956 : w ap 0 reg 17 MSP  0x20020000
+07:58:59:956 : w ap 0 reg 16 xPSR 0x01000000
+07:58:59:959 : Application is running, Please Hold on...
+07:58:59:959 : Start operation achieved successfully
+07:58:59:981 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:00:957 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:01:961 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:02:966 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:03:970 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:04:975 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:05:981 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:06:987 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5
+07:59:07:991 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0x000000D5

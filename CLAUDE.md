@@ -103,6 +103,11 @@ state estimator, trajectory, position/velocity loops, current request. Slow 100 
   window**. Each module exposes a `volatile` debug-mirror snapshot + guarded `volatile`
   command/inject fields (echoes old `sensors_debug` / `comm_vars` / DAC `iq`). Build
   debug-friendly (-Og/-O0, full symbols) so watched/injected vars aren't optimised away.
+- **Command-line rebuild for OTA:** run `./build.sh` after code changes — it does an incremental
+  `make -C Debug` (CubeIDE make + STM32CubeCLT toolchain) and emits **both**
+  `Debug/Generic_motor_controller.elf` (SWD) **and** `Debug/Generic_motor_controller.bin`
+  (the relocated app image at 0x08008800, for bootloading straight on), plus the app CRC32.
+  The bootloader has its own build under `boot/` (ADR-064).
 - Golden reference: compare live values/behaviour against `../bldc_axis_controller` (ADR-002).
 - Host tests (Unity) are **optional**, not a gate. `mc_*` modules stay HAL-free and
   host-compilable regardless, so off-target checks remain possible later.

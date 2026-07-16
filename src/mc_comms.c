@@ -2,6 +2,7 @@
 #include "mc_if_protocol.h"   /* shared contract (add ../Generic_axis_controller/Generic_axis_controller/Interface to the include path) */
 #include "mc_if_od.h"
 #include "mc_od.h"            /* command apply + status now go through the OD (no harness coupling) */
+#include "mc_boot_meta.h"     /* dual-bootloader entry on 0x1F51:1 = PROG_START (REQ-0015) */
 #include <string.h>
 
 /** @file mc_comms.c
@@ -250,7 +251,26 @@ void MC_Comms_HandleTransaction(const uint8_t *rx, uint8_t *tx_next)
         {
             const MC_IfOdWriteReq_t *w = (const MC_IfOdWriteReq_t *)pl;
             uint8_t result;
-            if (w->index == MC_IF_TLM_MAP_INDEX)
+            if ((w->index >= 0x1F50u) && (w->index <= 0x1F5Fu))
+            {
+                /* Bootloader OD range (owner BOOTLOADER) -- the app doesn't
+                 * serve it, EXCEPT 0x1F51:1 = PROG_START, which is the signal
+                 * to reboot into the field-update bootloader (REQ-0015). */
+                if ((w->index == 0x1F51u) && (w->subindex == 1u) &&
+                    (w->data_length >= 1u) && (w->data[0] == MC_IF_PROG_START))
+                {
+                    /* This runs in the SPI ISR -- do NOT touch flash here. Request
+                       entry; the slow loop writes STAY + resets. Returning OK lets
+                       this WRITE_RESP reach the master before the reboot. */
+                    MC_BootMeta_RequestEnterBootloader();
+                    result = MC_IF_OD_OK;
+                }
+                else
+                {
+                    result = MC_IF_OD_ERR_NOT_BOOTLOADER;
+                }
+            }
+            else if (w->index == MC_IF_TLM_MAP_INDEX)
             {
                 result = map_write(w->subindex, w->data, w->data_length);
             }

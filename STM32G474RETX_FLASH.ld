@@ -45,9 +45,14 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
-  /* Top 4K reserved for the NV parameter store: bank 2 pages 126-127
-     (0x0807F000, 0x0807F800). See ADR-010 / mc_flash_port_stm32g474.c. */
-  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 508K
+  /* Dual-bootloader flash map (REQ-0015 / ADR-064, boot/README.md):
+       0x08000000..0x08007FFF (32K)  bootloader
+       0x08008000..0x080087FF (2K)   boot-flag page (STAY/CLEAR blob)
+       0x08008800..0x0807EFFF (474K) app  <-- this region
+       0x0807F000..0x0807FFFF (4K)   NV parameter store (bank2 pg126/127) -- reserved
+     The app boots only via the bootloader, which sets VTOR to 0x08008800 before
+     jumping; main() also sets SCB->VTOR to 0x08008800 as insurance. */
+  FLASH    (rx)    : ORIGIN = 0x8008800,   LENGTH = 474K
 }
 
 /* Sections */
