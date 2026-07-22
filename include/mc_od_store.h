@@ -24,7 +24,7 @@ typedef struct
     float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */
     float    vel_accel_up, vel_accel_dn;             /* 0x2300:6,7 velocity-demand accel ramp caps [rad/s^2] (ADR-042) */
     float    vel_accel_jerk;                         /* 0x2300:8 accel ramp-up jerk [rad/s^3]; 0 = step (ADR-042) */
-    uint8_t  holding_enable;                         /* 0x2300:9 1 = hold when stopped (PI provides current); 0 = release after settle (ADR-054) */
+    uint8_t  holding_enable;                         /* 0x2300:9 ADVISORY ONLY (ADR-072/REQ-0016): motor always holds when enabled; CMC owns idle policy (op_mode HOLD/OFF via 0x3044) */
     uint8_t  jog_position_mode;                      /* 0x2300:10 0 = direct velocity jog (default); 1 = position-integrated jog (ADR-062) */
     uint8_t  dither_enable;                          /* 0x2320:1 low-speed anti-stiction dither on/off (ADR-066) */
     float    dither_speed_threshold_rad_s;           /* 0x2320:2 dither active/faded below |v| this [rad/s] (ADR-066) */

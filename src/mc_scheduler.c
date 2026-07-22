@@ -80,8 +80,6 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
                                bounds current). Raised from 3 V for plant ID (ADR-046). */
 #define MC_DQ_TEST_MAX_MS 10000u  /* d-axis plant-ID max dwell / auto-disarm backstop [ms] @ 1 kHz arbitration (ADR-046) */
 #define MC_STORE_LOAD_ATTEMPTS 3u  /* persistent-config load retries at boot before failing safe (ADR-051) */
-#define MC_HOLD_RELEASE_TICKS 1000u  /* settle time before holding-current release [ms @ 1 kHz medium loop] (ADR-054) */
-#define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
 #define MC_JOG_LEASH_RAD   1.0f    /* position-integrated jog: the moving reference may lead the actual by at most this [rad] (ADR-062) */
 /* Homing timing constants (MC_HOME_*) moved into mc_homing.c with the sequencer (ADR-068). */
 #define MC_RECALL_SETTLE_TICKS 100u  /* position-recall settle dwell: MOVING clear this long before storing [100 Hz slow -> 1 s] (ADR-067) */
@@ -118,8 +116,6 @@ static MC_TorqueModelConfig_t        s_torque_cfg;
 static volatile float                s_iq_cmd_published;  /* velocity-loop iq, medium->fast (atomic) */
 static volatile float                s_i_demand_max_a;    /* soft max demanded current (0x2400:8, 0=off); slow->fast (atomic) (ADR-069) */
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
-static bool                          s_hold_released;     /* holding-current release latched (ADR-054) */
-static uint32_t                      s_hold_settle_ticks; /* settle counter for the holding-current release (ADR-054) */
 static MC_Homing_t                   s_homing;            /* home-to-hard-stop sequencer state (ADR-057/068) */
 static bool                          s_set_zero_at_pending; /* deferred SET_MECH_ZERO_AT: apply mech_zero_set_rad in the medium loop (ADR-022) */
 static bool                          s_homed;             /* incremental encoder zeroed this power-cycle (NOT persisted; gates position recalls) (ADR-057) */
@@ -1474,8 +1470,7 @@ void MC_MotionLoop_1kHz(void)
     const bool vel_active = s_eff_drive && !s_eff_torque_mode && !s_oc_trip;
     if (vel_active)
     {
-        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); MC_Notch_Reset(&s_iq_notch);
-                         s_hold_released = false; s_hold_settle_ticks = 0u; s_vel_on = true; }
+        if (!s_vel_on) { MC_VelocityController_Reset(&s_vel); MC_Notch_Reset(&s_iq_notch); s_vel_on = true; }
 
         /* Motor safety envelope (ADR-040): clamp the velocity demand to the motor-owned ceiling,
            whatever its source (position cascade, direct velocity, signal generator). 0 = disabled. */
@@ -1520,36 +1515,11 @@ void MC_MotionLoop_1kHz(void)
         }
         const float vact = s_est.mechanical.velocity_rad_per_s;   /* observer by default */
 
-        /* Holding-current release (ADR-054): with holding_enable == 0, once the axis is commanded to
-           zero AND has settled at ~zero velocity for ~1 s, cut the current demand to 0 and park the
-           velocity integrator (anti-windup). Stays released until a non-zero command, so a back-drivable
-           axis can't hunt (release->drift->re-engage); resume is bumpless from the reset state. Only safe
-           where the mechanism self-holds (e.g. a self-locking leadscrew) -- it will drift if back-drivable. */
-        const bool cmd_zero = (fabsf(vdem) < 1e-3f);
-        if ((g_od.holding_enable != 0u) || !cmd_zero)
-        {
-            s_hold_released = false;
-            s_hold_settle_ticks = 0u;
-        }
-        else if (!s_hold_released)   /* holding==0 AND commanded zero: time the settle at ~zero speed */
-        {
-            if (fabsf(vact) < MC_HOLD_SETTLED_EPS)
-            {
-                if (++s_hold_settle_ticks >= MC_HOLD_RELEASE_TICKS) { s_hold_released = true; }
-            }
-            else { s_hold_settle_ticks = 0u; }
-        }
-
-        if (s_hold_released)
-        {
-            MC_VelocityController_Reset(&s_vel);   /* park the integrator -> no windup, bumpless resume */
-            s_iq_cmd_published           = 0.0f;
-            g_od.dither_output_a         = 0.0f;
-            g_mc_debug.vel_demand_rad_s  = vdem;
-            g_mc_debug.vel_torque_cmd_nm = 0.0f;
-            g_mc_debug.vel_iq_cmd_a      = 0.0f;
-        }
-        else
+        /* Always actively hold while enabled (ADR-072, REQ-0016): the motor no longer autonomously
+           releases holding current. Idle policy is the CMC's -- it commands op_mode = HOLD (keep
+           regulating to zero velocity) or OFF (drive disabled via the controlword, which drops
+           vel_active so the fast loop safe-offs the bridge). 0x2300:9 holding_enable is advisory only
+           now; the old 1 s dwell-release logic (ADR-054) is gone. */
         {
             const float tcorr = MC_VelocityController_Update(&s_vel, &s_vel_cfg, vdem, vact);
 
