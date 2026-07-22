@@ -1,6 +1,6 @@
 # ADR-068: Scheduler decomposition — extract inlined state machines into modules (start: mc_homing)
 
-- Status: Accepted (phase 1 — mc_homing extracted; further slices to follow)
+- Status: Accepted (phases 1, 3, 4 done; phase 2 deferred — see below)
 - Date: 2026-07-22
 - Related: ADR-057 (homing), ADR-005 (timing domains / bring-up), ADR-019 (OD generation),
   ADR-065/066/067 (recent feature modules whose *orchestration* accreted into the scheduler)
@@ -71,10 +71,42 @@ byte-for-byte behaviour-preserving against the inlined version — verified by r
 
 ## Consequences
 
-- `mc_scheduler.c` drops ~120 lines and the medium loop's homing slab becomes a ~15-line call +
+- `mc_scheduler.c` drops ~65 lines and the medium loop's homing slab becomes a ~15-line call +
   a thin arbiter branch; homing logic is now unit-testable in isolation.
 - Establishes the extraction pattern for subsequent slices.
-- **Follow-up slices (candidates, not yet decided):** the electrical-alignment routine, the
-  recall/dither slow-loop services behind a uniform `MC_X_Service(dt)` shape, and the slow-loop
-  OD-command dispatch. Plus: a golden-reference homing test; consider renaming `mc_boot_meta.c`
-  to the `*_stm32g474` boundary convention (it uses HAL but doesn't carry the suffix).
+
+## Phases 3 & 4 (2026-07-22) — slow-loop dispatcher
+
+Done together as the low-risk pair (build + review verified; no motor motion in either).
+
+- **Phase 4 — slow-loop OD-command dispatch.** The flat block that routes OD command words
+  (0x2800 store magics, 0x2700:1 cal commands, 0x2910:6 test trigger) to latched requests moved
+  **verbatim** into `static void od_commands_service_slow(void)`. Kept in-file, not a module: the
+  handlers latch scheduler-private state (`s_set_zero_at_pending`, `g_mc_inject` requests), so a
+  module would need a wide interface for no gain. The factory-reset / save wiring is unchanged.
+- **Phase 3 — normalise the remaining slow-loop blocks** into sibling `*_service_slow()` helpers
+  (`persistence_service_slow`, `thermal_service_slow`, `command_deadman_service_slow`) alongside the
+  existing `pos_recall_service_slow`. `MC_SlowLoop_10_100Hz` is now a 7-line dispatcher (BootMeta →
+  commands → persistence → recall → thermal → apply-gains → dead-man) with the **same ordering**
+  (thermal derates the current limit before `od_apply_gains` pushes it). **Dither was left inline**:
+  its logic already lives in `mc_dither`; the injection is a 3-line step *inside* the velocity
+  cascade (after the notch, on the published iq) that can't move without threading the local iq
+  in/out — extracting it would add noise, not clarity. Net: a few lines of wrapper for a loop body
+  that reads as named services instead of ~110 lines of inline blocks (line count is not the metric
+  here — organisation is; the reduction came in phase 1).
+
+## Phase 2 — deferred
+
+The electrical-alignment routine (`mc_align`) is the remaining substantive slice but is **not
+low-risk**: it energises the motor and produces the `electrical_offset_rad` commutation datum, and
+it shares the `s_eff_align*` command variables with the inject / dq-test paths. Deferred by the user
+(2026-07-22) because the rotor is currently fully loaded, so the on-target alignment test needed to
+validate the extraction can't be run. Revisit paired with a bench test (and ideally a host test).
+
+## Follow-ups
+
+- A **golden-reference host test for `mc_homing`** (now that it is a standalone HAL-free module):
+  approach → stop capture → back-off → DONE; abort; timeout → FAILED. This is the verification the
+  inlined code never had, and the harness the riskier phase-2 slice will want.
+- Consider renaming `mc_boot_meta.c` to the `*_stm32g474` boundary convention (it uses HAL but
+  doesn't carry the suffix).

@@ -1642,14 +1642,12 @@ static void pos_recall_service_slow(void)
     s_recall_was_moving = moving;
 }
 
-void MC_SlowLoop_10_100Hz(void)
+/* Slow-loop OD-command dispatch (ADR-068 phase 4): flat routing of OD command words to latched
+   requests -- no control math, no motion. Each handler consumes its command field and latches a
+   request the appropriate loop/service acts on. Extracted verbatim from MC_SlowLoop_10_100Hz so the
+   loop body reads as a sequence of services; the factory-reset / save magics are wired unchanged. */
+static void od_commands_service_slow(void)
 {
-    /* Dual-bootloader: once the app has run healthy for MC_BOOT_META_HEALTHY_MS,
-       clear the STAY flag so subsequent reboots go straight to the app. If the
-       app crashes before then, the flag stays STAY -> next boot re-enters the
-       bootloader (brick-proof, REQ-0015). */
-    MC_BootMeta_Tick();
-
     /* OD-triggered persistence commands (0x2800), via the shared magics. */
     if (g_od.store_factory_reset == MC_IF_FACTORY_RESET_MAGIC)
     {
@@ -1710,9 +1708,12 @@ void MC_SlowLoop_10_100Hz(void)
         g_od.test_trigger = 0u;
         g_mc_inject.request_test_fire = true;
     }
+}
 
-    /* Persistence: flash writes only when the power stage is off, to avoid disturbing an
-       active drive (ADR-010). The store erases/programs the inactive A/B slot. */
+/* Persistence service (ADR-010/068 phase 3): commit pending saves + a requested factory reset, only
+   with the power stage off so a flash erase/program can't disturb an active drive. */
+static void persistence_service_slow(void)
+{
     if (!s_pwm_on)
     {
         if (g_mc_inject.request_factory_reset)
@@ -1725,30 +1726,45 @@ void MC_SlowLoop_10_100Hz(void)
         g_mc_debug.store_valid = MC_PersistentStore_HasValid();
     }
     g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
+}
 
-    pos_recall_service_slow();   /* ADR-067: journal the last position / invalidate on move start */
+/* Winding thermal model service (ADR-065/068 phase 3): advance the I²t estimate at the slow rate
+   (100 Hz) from the measured motor-current magnitude, then mirror utilisation + derate to the OD
+   (0x2100:4/5). Backend-aware current: |i_arm| for brushed, sqrt(id^2+iq^2) for FOC. Must run before
+   od_apply_gains() so the derated current limit is applied this tick. */
+static void thermal_service_slow(void)
+{
+    const float i_thermal = (g_od.motor_backend_sel == 1u)
+        ? fabsf(g_od.tlm_i_arm_a)
+        : sqrtf(g_od.tlm_id_meas_a * g_od.tlm_id_meas_a + g_od.tlm_iq_meas_a * g_od.tlm_iq_meas_a);
+    MC_Thermal_SetParams(g_od.thermal_enable != 0u, g_od.thermal_i_cont_a, g_od.thermal_tau_s,
+                         g_od.thermal_derate_start);
+    MC_Thermal_Update(i_thermal, MC_MOTION_DT_S * 10.0f);   /* slow loop = 1 kHz / 10 = 100 Hz */
+    g_od.thermal_utilisation   = MC_Thermal_Utilisation();
+    g_od.thermal_derate_factor = MC_Thermal_DerateFactor();
+}
 
-    /* Winding thermal model (ADR-065): advance the I²t estimate at the slow rate (100 Hz) from
-       the measured motor-current magnitude, then mirror utilisation + derate to the OD (0x2100:4/5).
-       Backend-aware current: |i_arm| for brushed, sqrt(id^2+iq^2) for FOC. Must run before
-       od_apply_gains() so the derated current limit is applied this tick. */
-    {
-        const float i_thermal = (g_od.motor_backend_sel == 1u)
-            ? fabsf(g_od.tlm_i_arm_a)
-            : sqrtf(g_od.tlm_id_meas_a * g_od.tlm_id_meas_a + g_od.tlm_iq_meas_a * g_od.tlm_iq_meas_a);
-        MC_Thermal_SetParams(g_od.thermal_enable != 0u, g_od.thermal_i_cont_a, g_od.thermal_tau_s,
-                             g_od.thermal_derate_start);
-        MC_Thermal_Update(i_thermal, MC_MOTION_DT_S * 10.0f);   /* slow loop = 1 kHz / 10 = 100 Hz */
-        g_od.thermal_utilisation   = MC_Thermal_Utilisation();
-        g_od.thermal_derate_factor = MC_Thermal_DerateFactor();
-    }
-    od_apply_gains();   /* apply OD-written gains to the live controllers (safe update point) */
-
-    /* Inter-MCU command dead-man (REMOTE mode only): a stale cyclic-command stream zeroes the
-       remote velocity demand (the OD target). Skipped in commissioning so the watch-window
-       command is never clobbered. Full quick-stop is the fault manager's job (E2). */
+/* Inter-MCU command dead-man (ADR-068 phase 3), REMOTE mode only: a stale cyclic-command stream
+   zeroes the remote velocity demand (the OD target). Skipped in commissioning so the watch-window
+   command is never clobbered. Full quick-stop is the fault manager's job (E2). */
+static void command_deadman_service_slow(void)
+{
     if (!g_mc_inject.inject_enable && MC_Comms_CommandTimedOut())
     {
         g_od.target_velocity = 0;
     }
+}
+
+void MC_SlowLoop_10_100Hz(void)
+{
+    /* Slow/supervisory context (100 Hz). A thin dispatcher: run each service in order, then apply
+       OD-written gains at this safe update point. Ordering matters -- thermal_service_slow() derates
+       the current limit that od_apply_gains() then pushes to the live controllers this tick. */
+    MC_BootMeta_Tick();               /* dual-bootloader healthy-window STAY-flag clear (REQ-0015) */
+    od_commands_service_slow();       /* route OD command words to latched requests (ADR-068 phase 4) */
+    persistence_service_slow();       /* commit saves / factory reset when the drive is off (ADR-010) */
+    pos_recall_service_slow();        /* journal the last position / invalidate on move start (ADR-067) */
+    thermal_service_slow();           /* advance the I²t model + mirror utilisation/derate (ADR-065) */
+    od_apply_gains();                 /* apply OD-written gains to the live controllers (safe point) */
+    command_deadman_service_slow();   /* zero a stale remote velocity demand (REMOTE only) */
 }
