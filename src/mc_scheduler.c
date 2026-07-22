@@ -134,6 +134,7 @@ static bool                          s_eff_position_mode; /* PROFILE_POSITION ac
 static bool                          s_pos_on;            /* position loop active (for entry reset) */
 static float                         s_accel_ff_rad_s2;   /* trajectory accel feedforward -> torque request */
 static float                         s_vel_ff_gain;       /* velocity FF ratio in the position cascade (0x2200:4, ADR-031) */
+static float                         s_jog_ref_vel;       /* position-jog reference velocity (Δref/dt) -> velocity FF (ADR-073); 0 when not jogging */
 static float                         s_pos_hold_rad;      /* held position when in position mode with no active plan */
 
 /* Loop-tuning test-signal overlay (ADR-030): an on-motor generator drives the selected loop's reference. */
@@ -1047,6 +1048,7 @@ void MC_MotionLoop_1kHz(void)
         const MC_DriveStatus_t ds = MC_ModeManager_GetStatus();
 
         s_eff_align_q = false; s_eff_hb_test = false;   /* default each cycle; the dq-test sets per-axis (ADR-046 ext) */
+        s_jog_ref_vel = 0.0f;   /* default: no jog FF this tick unless the position-jog block sets it (ADR-073) */
 
         /* Homing sequencer (ADR-057, extracted ADR-068). home_command is a level -- 1 = run,
            0 = idle/reset; watch-inject and the dq-test preempt it. The module owns the phase/timers/
@@ -1179,8 +1181,9 @@ void MC_MotionLoop_1kHz(void)
                     s_traj.active       = false;   /* streaming target, no planned move */
                     if (s_pos_on)
                     {
-                        const float jog_vel = vel_slew_limit(dc.target_velocity_rad_per_s);
-                        const float p_act   = s_est.mechanical.position_rad - s_home_offset_rad;
+                        const float jog_vel  = vel_slew_limit(dc.target_velocity_rad_per_s);
+                        const float p_act    = s_est.mechanical.position_rad - s_home_offset_rad;
+                        const float ref_prev = s_pos_hold_rad;
                         s_pos_hold_rad += jog_vel * MC_MOTION_DT_S;
                         if      (s_pos_hold_rad > p_act + MC_JOG_LEASH_RAD) { s_pos_hold_rad = p_act + MC_JOG_LEASH_RAD; }
                         else if (s_pos_hold_rad < p_act - MC_JOG_LEASH_RAD) { s_pos_hold_rad = p_act - MC_JOG_LEASH_RAD; }
@@ -1189,6 +1192,11 @@ void MC_MotionLoop_1kHz(void)
                             if      (s_pos_hold_rad > g_od.pos_limit_hi_rad) { s_pos_hold_rad = g_od.pos_limit_hi_rad; }
                             else if (s_pos_hold_rad < g_od.pos_limit_lo_rad) { s_pos_hold_rad = g_od.pos_limit_lo_rad; }
                         }
+                        /* Velocity feedforward for the jog (ADR-073): the FF is the ACTUAL per-tick advance of the
+                           (leash/soft-limit-clamped) reference, not the raw jog_vel -- so when the leash or a limit
+                           pins the reference, the advance (and thus the FF) collapses to 0 instead of over-driving.
+                           Consumed by the position cascade's hold branch and scaled by s_vel_ff_gain (0x2200:4). */
+                        s_jog_ref_vel = (s_pos_hold_rad - ref_prev) / MC_MOTION_DT_S;
                     }
                 }
             }
@@ -1436,7 +1444,11 @@ void MC_MotionLoop_1kHz(void)
                 /* No active plan (idle, or the plan was abandoned on a velocity-mode jog, ADR-056): hold the
                    latched position, but this is NOT a commanded target -- so don't report on-target/on-shot
                    here. The CMC's target was the recalled position, not a manual trim. */
-                p_dem = s_pos_hold_rad; v_ff = 0.0f; a_ff = 0.0f; complete = true;
+                /* v_ff = s_jog_ref_vel is the jog reference velocity (Δref/dt) during a position-integrated
+                   jog, and 0 for a genuine idle hold (the arbiter leaves it 0) -- so the jog gets velocity
+                   feedforward (no following lag) while a static hold stays pure feedback (ADR-073). Scaled
+                   by s_vel_ff_gain at the demand sum below, same as the trajectory FF. */
+                p_dem = s_pos_hold_rad; v_ff = s_jog_ref_vel; a_ff = 0.0f; complete = true;
                 at_cmd_target = false;
             }
         }

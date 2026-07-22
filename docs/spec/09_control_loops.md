@@ -114,6 +114,11 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   `0x2200:4`, default 1.0, trims the feedforward ratio; ADR-031); `accel_ff` →
   the torque request's inertia slot. `target_reached` (complete + within window) → statusword
   bit `MC_IF_SW_TARGET_REACHED (0x0400)`. First cut: from-rest, single fixed window.
+  **Position-integrated jog FF (ADR-073):** the jog (`jog_position_mode = 1`) integrates the stick
+  velocity into the position reference; its velocity feedforward is the **actual per-tick advance of
+  the clamped reference** `(s_pos_hold_rad − prev)/dt` (so it collapses to 0 under the leash / soft
+  limits rather than over-driving), fed through the same `velocity_ff_gain`. Removes the `jog_vel/Kp`
+  following lag; a genuine idle hold keeps `v_ff = 0` (pure feedback).
 
 ## Loop tuning — on-motor test-signal modes (ADR-030)
 
