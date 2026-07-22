@@ -134,3 +134,11 @@ current_demand_limit:                                       # ADR-069
   od_entry: 0x2400_8_current_demand_limit_a                 # F32 RW PERSIST; in the current-loop block -> GUI "Current loop gains"
   cross_validation: none                                    # operator sets both; if above the trip it is simply never reached
   default: disabled                                         # 0 = no clamp, no behaviour change until set
+position_deadband:                                          # ADR-071
+  purpose: park_zone_stop_hold_point_hunting                # no position correction within +/- deadband of target
+  form: continuous_subtract_band                            # inside +/-db -> 0; outside -> e-/+db, so correction is continuous at the edge (no step)
+  apply_point: position_controller_error_pre_following_clamp # on the loop's error only; raw position_error_rad telemetry unaffected
+  affects: hold_not_move                                    # velocity FF dominates during a trajectory; db~mrad vs moves~rad
+  od_entry: 0x2200_5_position_deadband_rad                  # F32 RW PERSIST; in the position-loop block -> GUI "Position loop gains"
+  rule: keep_below_target_reached_window                    # < 0.01 rad so TARGET_REACHED still reports when parked (not enforced)
+  default: disabled                                         # 0 = no deadband, no behaviour change until set

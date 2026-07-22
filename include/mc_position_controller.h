@@ -17,6 +17,7 @@ typedef struct
     MC_PidConfig_t pid;
     float velocity_correction_limit_rad_per_s;
     float following_error_limit_rad;
+    float deadband_rad;   /**< Position-error deadband [rad]: no correction within +/- this of target; 0 = off (ADR-071). */
 } MC_PositionControllerConfig_t;
 
 void MC_PositionController_Init(MC_PositionController_t *ctrl);

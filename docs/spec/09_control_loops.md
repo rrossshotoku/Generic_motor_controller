@@ -102,7 +102,12 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   limit, id = 0. Accel/friction FF present but 0 until D3 / friction ID.
 - **Position loop** (D3, ADR-028): `mc_position_controller.c` — `velocity_correction =
   PID(position_demand − position_actual)`, P-only default (gains `0x2200`), output clamped to a
-  velocity-correction limit, error clamped to a following-error limit. Wired into the scheduler
+  velocity-correction limit, error clamped to a following-error limit. A **position-error deadband**
+  `position_deadband_rad` (`0x2200:5`, ADR-071, 0 = off) nulls the correction within ±deadband of the
+  target so the axis parks instead of hunting; continuous form (subtracts the band outside it → the
+  correction reaches 0 smoothly at the edge, no velocity step), applied before the following-error
+  clamp, on the loop's error only (raw `position_error_rad` telemetry is unaffected). Keep it below
+  the target-reached window (0.01 rad). Wired into the scheduler
   `PROFILE_POSITION` cascade: `NEW_SETPOINT` starts a trapezoidal plan (target `0x607A`, time
   `0x607B`, limits `0x6081/3/4`); each 1 kHz tick trajectory → position loop →
   `velocity_demand = velocity_ff_gain·trajectory_velocity_ff + correction` → velocity loop (the FF gain

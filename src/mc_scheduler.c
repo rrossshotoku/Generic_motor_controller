@@ -327,6 +327,7 @@ static void od_apply_gains(void)
     s_pos_cfg.pid.kp = g_od.pos_kp;
     s_pos_cfg.pid.ki = g_od.pos_ki;
     s_pos_cfg.pid.kd = g_od.pos_kd;
+    s_pos_cfg.deadband_rad = g_od.position_deadband_rad;   /* 0x2200:5 position-error deadband (ADR-071) */
     s_vel_ff_gain    = (g_od.velocity_ff_gain >= 0.0f) ? g_od.velocity_ff_gain : 0.0f;  /* 0x2200:4 (ADR-031) */
     {
         const float vlim = (float)g_od.profile_velocity * MC_IF_VEL_SCALE;

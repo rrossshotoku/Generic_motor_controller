@@ -5,9 +5,10 @@
  *
  *  velocity_correction = PID(position_demand - position_actual), P-only by default (gains 0x2200).
  *  The scheduler forms velocity_demand = trajectory_velocity_ff + velocity_correction and feeds the
- *  velocity loop. The position error is bounded by `following_error_limit_rad` (a guard against a huge
- *  transient correction on a large error, and the basis for a future following-error fault) and the
- *  output is clamped to `velocity_correction_limit_rad_per_s`.
+ *  velocity loop. A `deadband_rad` zone around the target produces no correction (ADR-071, parks the
+ *  axis instead of hunting); the error is then bounded by `following_error_limit_rad` (a guard against
+ *  a huge transient correction on a large error, and the basis for a future following-error fault) and
+ *  the output is clamped to `velocity_correction_limit_rad_per_s`.
  */
 
 void MC_PositionController_Init(MC_PositionController_t *ctrl)
@@ -35,11 +36,26 @@ float MC_PositionController_Update(MC_PositionController_t *ctrl,
     if ((ctrl == 0) || (cfg == 0)) { return 0.0f; }
 
     const float err = position_demand_rad - position_actual_rad;
-    ctrl->position_error_rad = err;
+    ctrl->position_error_rad = err;   /* raw error is reported/telemetered; the deadband only affects the loop */
+
+    float e = err;
+
+    /* Position-error deadband (ADR-071): give the loop a zone around the target where it issues no
+       correction, so the axis PARKS instead of hunting/creeping on tiny errors (esp. with an
+       imperfect low-level current feedback). Continuous form -- subtract the band outside it so the
+       correction reaches 0 smoothly at the band edge (no velocity step to excite an edge limit
+       cycle). Steady state still parks within +/- deadband. 0 = disabled. Keep it below the
+       target-reached window so "reached" is reported when parked. */
+    const float db = cfg->deadband_rad;
+    if (db > 0.0f)
+    {
+        if      (e >  db) { e -= db; }
+        else if (e < -db) { e += db; }
+        else              { e  = 0.0f; }
+    }
 
     /* Bound the error driving the loop (following-error guard) so a large position step can't demand a
        wild velocity correction; the limit also feeds a future following-error fault. */
-    float e = err;
     const float fe = cfg->following_error_limit_rad;
     if (fe > 0.0f)
     {
