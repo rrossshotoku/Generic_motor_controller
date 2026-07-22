@@ -22,6 +22,7 @@
 #include "mc_thermal.h"      /* winding I²t thermal model + progressive current-limit derate (ADR-065) */
 #include "mc_dither.h"       /* low-speed anti-stiction current dither (ADR-066) */
 #include "mc_pos_recall.h"   /* persistent last-position journal for non-back-drivable incremental axes (ADR-067) */
+#include "mc_homing.h"       /* home-to-hard-stop sequencer, extracted from this file (ADR-068) */
 #include "mc_quad_encoder.h" /* TIM2 quadrature count, mirrored to 0x2510:4 (ADR-050) */
 #include "mc_position_controller.h"
 #include "mc_signal_gen.h"
@@ -76,11 +77,8 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
 #define MC_STORE_LOAD_ATTEMPTS 3u  /* persistent-config load retries at boot before failing safe (ADR-051) */
 #define MC_HOLD_RELEASE_TICKS 1000u  /* settle time before holding-current release [ms @ 1 kHz medium loop] (ADR-054) */
 #define MC_HOLD_SETTLED_EPS   0.1f   /* |actual velocity| below this counts as settled [rad/s] (ADR-054) */
-#define MC_HOME_STILL_MS   1000u   /* end stop confirmed after movement stays negligible this long [ms @ 1 kHz] (ADR-057) */
-#define MC_HOME_BACKOFF_MS 1000u   /* after finding the stop, drive the OPPOSITE way this long, then zero there [ms @ 1 kHz] (ADR-057) */
 #define MC_JOG_LEASH_RAD   1.0f    /* position-integrated jog: the moving reference may lead the actual by at most this [rad] (ADR-062) */
-#define MC_HOME_STILL_EPS  0.01f   /* |mechanical velocity| below this counts as "not moving" [rad/s] (ADR-057) */
-#define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if it never settles / trips [ms @ 1 kHz] (ADR-057) */
+/* Homing timing constants (MC_HOME_*) moved into mc_homing.c with the sequencer (ADR-068). */
 #define MC_RECALL_SETTLE_TICKS 100u  /* position-recall settle dwell: MOVING clear this long before storing [100 Hz slow -> 1 s] (ADR-067) */
 #define MC_RECALL_MOVE_EPS 0.01f     /* |mechanical velocity| below this counts as "not moving" for recall [rad/s] (ADR-067) */
 #define MC_RECALL_STORE_EPS 0.001f   /* store-on-change: skip a re-store if the settled position moved less than this [rad] (ADR-067) */
@@ -116,11 +114,7 @@ static volatile float                s_iq_cmd_published;  /* velocity-loop iq, m
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
 static bool                          s_hold_released;     /* holding-current release latched (ADR-054) */
 static uint32_t                      s_hold_settle_ticks; /* settle counter for the holding-current release (ADR-054) */
-static uint32_t                      s_home_still_ticks;  /* homing no-movement dwell counter (ADR-057) */
-static uint32_t                      s_home_total_ticks;  /* homing elapsed-time counter for the timeout (ADR-057) */
-static bool                          s_home_moved;        /* homing: axis has moved -> arm the no-movement detector (ADR-057) */
-static bool                          s_home_backing_off;  /* homing: stop found -> now in the back-off phase (ADR-057) */
-static uint32_t                      s_home_backoff_ticks;/* homing back-off dwell counter (ADR-057) */
+static MC_Homing_t                   s_homing;            /* home-to-hard-stop sequencer state (ADR-057/068) */
 static bool                          s_set_zero_at_pending; /* deferred SET_MECH_ZERO_AT: apply mech_zero_set_rad in the medium loop (ADR-022) */
 static bool                          s_homed;             /* incremental encoder zeroed this power-cycle (NOT persisted; gates position recalls) (ADR-057) */
 
@@ -581,6 +575,7 @@ void MC_Framework_Init(void)
     MC_Od_Init();
     MC_Thermal_Init();      /* winding I²t thermal model (ADR-065); safe disabled default */
     MC_Dither_Init();       /* low-speed anti-stiction dither (ADR-066); off by default */
+    MC_Homing_Init(&s_homing);   /* home-to-hard-stop sequencer (ADR-057/068) */
     MC_Comms_Init();        /* SPI protocol handler (transport DMA wired in F2b) */
     MC_BootMeta_Init();     /* read boot flag; arm the healthy-window flag clear (REQ-0015) */
     MC_ModeManager_Init();  /* CiA-402 drive state machine (E1) */
@@ -1037,27 +1032,24 @@ void MC_MotionLoop_1kHz(void)
 
         s_eff_align_q = false; s_eff_hb_test = false;   /* default each cycle; the dq-test sets per-axis (ADR-046 ext) */
 
-        /* Homing state machine (ADR-057): home_command is a level -- 1 = run, 0 = idle/reset. Watch-inject
-           and the dq-test preempt it. Command 0 also clears a latched DONE/FAILED back to IDLE (re-arm = 0->1). */
-        if ((g_od.home_command != 0u) && !g_mc_inject.inject_enable && !g_od.dq_test_enable)
-        {
-            if (g_od.home_status == MC_IF_HOME_IDLE)   /* rising into an idle state -> start */
-            {
-                g_od.home_status   = MC_IF_HOME_RUNNING;
-                s_home_still_ticks = 0u;
-                s_home_total_ticks = 0u;
-                s_home_moved       = false;
-                s_home_backing_off = false;
-                s_home_backoff_ticks = 0u;
-                s_oc_trip          = false;   /* drop any stale latched trip so it can't instantly "find" the stop (ADR-057) */
-                vel_slew_reset(s_est.mechanical.velocity_rad_per_s);   /* ramp the approach from the current velocity (ADR-057) */
-            }
-        }
-        else
-        {
-            if (g_od.home_status == MC_IF_HOME_RUNNING) { g_od.home_status = MC_IF_HOME_IDLE; }  /* off/preempt -> abort */
-            if (g_od.home_command == 0u)                { g_od.home_status = MC_IF_HOME_IDLE; }  /* 0 clears done/failed */
-        }
+        /* Homing sequencer (ADR-057, extracted ADR-068). home_command is a level -- 1 = run,
+           0 = idle/reset; watch-inject and the dq-test preempt it. The module owns the phase/timers/
+           status; the shared mech-zero anchor, slew limiter, OC-trip latch and persistence stay here
+           and are driven by the output pulses. The arbiter's homing branch (below) applies the drive. */
+        MC_HomingInput_t hin;
+        hin.enable              = (g_od.home_command != 0u) && !g_mc_inject.inject_enable && !g_od.dq_test_enable;
+        hin.clear               = (g_od.home_command == 0u);
+        hin.mech_position_rad   = s_est.mechanical.position_rad;
+        hin.mech_velocity_rad_s = s_est.mechanical.velocity_rad_per_s;
+        hin.oc_trip             = s_oc_trip;
+        hin.home_velocity_rad_s = g_od.home_velocity_rad_s;
+        MC_HomingOutput_t hout;
+        MC_Homing_Update(&s_homing, &hin, &hout);
+        g_od.home_status = hout.status;
+        if (hout.reset_slew)      { vel_slew_reset(s_est.mechanical.velocity_rad_per_s); }
+        if (hout.capture_zero)    { s_home_offset_rad = s_est.mechanical.position_rad; g_mc_debug.home_offset_rad = s_home_offset_rad; }
+        if (hout.consume_oc_trip) { s_oc_trip = false; }
+        if (hout.completed)       { s_homed = true; params_save(); }   /* persist the zero captured at the stop */
 
         if (g_mc_inject.inject_enable)
         {
@@ -1112,78 +1104,21 @@ void MC_MotionLoop_1kHz(void)
             g_od.statusword     = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
                                            | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
         }
-        else if (g_od.home_status == MC_IF_HOME_RUNNING)
+        else if (hout.active)
         {
-            /* Homing to a hard end stop (ADR-057): drive velocity mode at home_velocity toward the stop.
-               The stop is detected by the armature current exceeding home_current for MC_HOME_DWELL_MS
-               (10 ms) OR the OC trip firing -- a hard stop spikes the current past the OC limit before a
-               longer dwell would confirm, and the OC trip blocks the drive, so we must treat it as the
-               stop signal too. Then set the encoder zero here (like set-mech-zero) and stop. Abort after
-               MC_HOME_TIMEOUT_MS if neither trips. Uses the velocity loop -> needs the quad feedback (0x2500:8). */
+            /* Homing owns this tick (ADR-057/068). The sequencer (above) advanced the phase/timers and
+               emitted the drive command + any capture/persist side-effects; here we just set velocity
+               mode and apply it. velocity_cmd is raw -> ramp through the slew limiter unless the module
+               asked to bypass it (the one-tick zero at stop capture and the failed/done stops). */
             s_dq_test_ticks = 0u;
-            s_home_total_ticks++;
-
             s_eff_align       = false;
             s_eff_torque_mode = false;   /* velocity mode */
             s_eff_position_mode = false;
             s_eff_halt        = false;
             s_eff_iq_cmd      = 0.0f;
             s_eff_id_cmd      = 0.0f;
-
-            if (!s_home_backing_off)
-            {
-                /* APPROACH: drive to the stop. Detected by no-movement (armed on "has moved" so the
-                   initial ramp-up isn't mistaken for the stop) OR the OC trip. (ADR-057) */
-                const float vmag = fabsf(s_est.mechanical.velocity_rad_per_s);
-                if (vmag > MC_HOME_STILL_EPS) { s_home_moved = true; s_home_still_ticks = 0u; }
-                else if (s_home_moved)        { s_home_still_ticks++; }
-
-                if ((s_home_still_ticks >= MC_HOME_STILL_MS) || s_oc_trip)
-                {
-                    /* Stop found -> capture the encoder zero HERE (at the hard stop = the datum), then
-                       back off before finishing so the axis doesn't hold pressed against the stop (ADR-057). */
-                    s_home_offset_rad          = s_est.mechanical.position_rad;   /* zero = the hard stop */
-                    g_mc_debug.home_offset_rad = s_home_offset_rad;
-                    if (s_oc_trip) { s_oc_trip = false; }   /* consume the trip so the back-off can drive */
-                    s_home_backing_off   = true;
-                    s_home_backoff_ticks = 0u;
-                    vel_slew_reset(s_est.mechanical.velocity_rad_per_s);   /* ramp the back-off from rest */
-                    s_eff_drive   = true;
-                    s_eff_vel_cmd = 0.0f;   /* the ramp begins next tick, in the back-off branch */
-                }
-                else if (s_home_total_ticks >= MC_HOME_TIMEOUT_MS)  /* safety timeout -> fail (no stop found) */
-                {
-                    g_od.home_status = MC_IF_HOME_FAILED;
-                    s_eff_drive      = false;
-                    s_eff_vel_cmd    = 0.0f;
-                }
-                else                                                /* keep driving toward the stop */
-                {
-                    s_eff_drive   = true;
-                    s_eff_vel_cmd = vel_slew_limit(g_od.home_velocity_rad_s);   /* ramp the approach (0x2300:6/7/8, ADR-042) */
-                }
-            }
-            else
-            {
-                /* BACK OFF: drive the OPPOSITE direction (ramped) for MC_HOME_BACKOFF_MS, then finish.
-                   The zero is already captured at the stop; backing off parks the axis clear of it, so
-                   when position mode re-engages the hold-on-enable latches s_pos_hold_rad = current and
-                   holds it HERE -- it does not drive 0 back into the stop. (ADR-057) */
-                s_home_backoff_ticks++;
-                if (s_home_backoff_ticks >= MC_HOME_BACKOFF_MS)
-                {
-                    params_save();   /* persist the zero captured at the stop */
-                    g_od.home_status = MC_IF_HOME_DONE;
-                    s_homed          = true;   /* incremental axis now has a zero -> position recalls allowed (ADR-057) */
-                    s_eff_drive      = false;
-                    s_eff_vel_cmd    = 0.0f;
-                }
-                else
-                {
-                    s_eff_drive   = true;
-                    s_eff_vel_cmd = vel_slew_limit(-g_od.home_velocity_rad_s);   /* opposite direction, ramped */
-                }
-            }
+            s_eff_drive       = hout.want_drive;
+            s_eff_vel_cmd     = hout.slew ? vel_slew_limit(hout.velocity_cmd) : hout.velocity_cmd;
             g_od.statusword = (uint16_t)((g_mc_debug.pwm_enabled ? MC_IF_SW_ENABLED : 0u)
                                        | (s_oc_trip ? MC_IF_SW_FAULT : 0u) | MC_IF_SW_READY);
         }
