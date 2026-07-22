@@ -78,6 +78,15 @@ FOC shall use two PI loops:
 
 Outputs are voltage commands `vd`, `vq`. The vector shall be limited against available bus voltage. Apply current-loop anti-windup when voltage saturation occurs.
 
+**Soft max-demand current limit (ADR-069):** the demanded current at the current-loop input shall be
+clampable to a working ceiling *below* the hard over-current trip (`current_trip_a`, `0x2600:2`), so
+the axis saturates at a chosen current instead of tripping. `current_demand_limit_a` (`0x2400:8`, RW
+PERSIST, `0` = disabled) clamps the torque-producing command (iq for FOC, armature for brushed) to
+`±limit` in the fast loop, downstream of every command source (velocity/position cascade, torque
+mode, and the tuning sweep). It bounds `iq` (≈ peak phase current when `id ≈ 0`, matching the OC-trip
+quantity); `id` is left unclamped, still backstopped by the trip. Distinct from the velocity loop's
+`vel_current_limit_a` (`0x2300:4`), which only limits velocity/position-derived commands.
+
 ## Realized (implementation)
 
 - **Current loop / FOC** (D1, ADR-011): `mc_foc.c` — Clarke/Park, d/q PI (kp 1.7, ki 1700,

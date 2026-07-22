@@ -126,3 +126,11 @@ position_recall:                                            # ADR-067
   runtime: slow_loop_100hz                                  # boot recall one-shot in the medium loop before the drive is enabled
   od_entries: [0x2700:11 enable, 0x2700:12 status]          # enable U8 RW PERSIST; status U8 RO 0 off/1 recalled/2 stale/3 none
   default: disabled                                         # enable=0 -> normal homing until configured
+current_demand_limit:                                       # ADR-069
+  purpose: soft_working_ceiling_below_oc_trip               # saturate at a chosen current instead of tripping the protective OC (0x2600:2)
+  quantity: torque_current                                  # clamps iq (FOC) / armature (brushed); ~peak phase when id~0, matching the OC-trip i_max
+  clamp_point: current_loop_input_fast_loop                 # bounds every source: velocity/position cascade, torque mode, freq-sweep overlay
+  distinct_from: [current_trip_a_0x2600_2, vel_current_limit_a_0x2300_4]  # protective trip (faults); velocity-loop limit (velocity/position only)
+  od_entry: 0x2400_8_current_demand_limit_a                 # F32 RW PERSIST; in the current-loop block -> GUI "Current loop gains"
+  cross_validation: none                                    # operator sets both; if above the trip it is simply never reached
+  default: disabled                                         # 0 = no clamp, no behaviour change until set

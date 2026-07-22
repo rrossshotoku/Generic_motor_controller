@@ -31,6 +31,7 @@ typedef struct
     float    dither_freq_hz;                         /* 0x2320:4 dither frequency [Hz] (ADR-066) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
     float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed current PI gains, set directly (ADR-049) */
+    float    current_demand_limit_a;                 /* 0x2400:8 soft max demanded current (iq/armature) below the OC trip; 0 = off (ADR-069) */
     float    est_electrical_offset_rad;              /* 0x2500:1 */
     float    est_velocity_filter_hz;                 /* 0x2500:2 */
     float    est_obs_kp, est_obs_ki, est_obs_kv;     /* 0x2500:3..5 */

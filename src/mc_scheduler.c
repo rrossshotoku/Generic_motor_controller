@@ -111,6 +111,7 @@ static MC_VelocityController_t       s_vel;
 static MC_VelocityControllerConfig_t s_vel_cfg;
 static MC_TorqueModelConfig_t        s_torque_cfg;
 static volatile float                s_iq_cmd_published;  /* velocity-loop iq, medium->fast (atomic) */
+static volatile float                s_i_demand_max_a;    /* soft max demanded current (0x2400:8, 0=off); slow->fast (atomic) (ADR-069) */
 static bool                          s_vel_on;            /* velocity loop active (for entry reset) */
 static bool                          s_hold_released;     /* holding-current release latched (ADR-054) */
 static uint32_t                      s_hold_settle_ticks; /* settle counter for the holding-current release (ADR-054) */
@@ -311,6 +312,10 @@ static void od_apply_gains(void)
        current_trip_a (0x2600:2) -- GUI-settable + PERSIST. Clamp to a small positive minimum so a
        stray 0 / negative can't latch the trip permanently and lock the drive out. (ADR-029) */
     g_mc_inject.current_limit_a = (g_od.current_trip_a > 0.1f) ? g_od.current_trip_a : 0.1f;
+
+    /* Soft max-demand current ceiling (0x2400:8, ADR-069): a working limit below the OC trip,
+       applied at the current-loop input in the fast loop. 0 = disabled. */
+    s_i_demand_max_a = g_od.current_demand_limit_a;
 
     /* Position loop (D3, ADR-028): P-default gains (0x2200); velocity correction capped at the
        profile velocity (0x6081), falling back to 10 rad/s if unset. */
@@ -695,6 +700,15 @@ void MC_Sched_ServiceBackground(void)
 
 /* ----- Loop bodies (Stage A1: cadence only; filled in by later stages) ----- */
 
+/* Soft max-demand current clamp (ADR-069): bound the commanded (torque-producing) current to
+   +/- s_i_demand_max_a, a working limit set below the hard OC trip. 0 = disabled (raw command
+   passes through). Applied at the current-loop input for both backends + every command source. */
+static inline float clamp_i_demand(float i_cmd)
+{
+    const float m = s_i_demand_max_a;
+    return (m > 0.0f) ? MC_Math_Clamp(i_cmd, -m, m) : i_cmd;
+}
+
 void MC_FastLoop_20kHz(void)
 {
     /* Stage B1: read phase currents (sample-synchronised to the PWM peak). Offset
@@ -779,7 +793,7 @@ void MC_FastLoop_20kHz(void)
            Magnitude was verified vs a meter; the DAC shows |i| and was correct, only the sign was wrong.)
            Dual-leg (I_A - I_B)/2 lands once ADC2 reads IN7 = I_A. */
         const float i_arm = -s_currents.ia_a;
-        const float i_cmd = sweep_on ? sweep_iq : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published);  /* sweep overlays here too (ADR-047) */
+        const float i_cmd = clamp_i_demand(sweep_on ? sweep_iq : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published));  /* sweep overlays here too (ADR-047); demand-limited (ADR-069) */
 
         /* Open-loop voltage (bring-up: verify current sign/scaling) OR the closed armature-current PI.
            Open-loop holds the PI reset so closing it afterwards is bumpless. Gains are live-tunable. */
@@ -838,7 +852,7 @@ void MC_FastLoop_20kHz(void)
         cmd.id_a   = s_eff_id_cmd;
         /* Torque mode: direct iq, or the frequency-sweep overlay (sweep_on/sweep_iq computed above so it
            overlays both backends). Velocity mode: iq from the medium-loop velocity cascade. (ADR-047) */
-        cmd.iq_a   = sweep_on ? sweep_iq : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published);
+        cmd.iq_a   = clamp_i_demand(sweep_on ? sweep_iq : (s_eff_torque_mode ? s_eff_iq_cmd : s_iq_cmd_published));  /* demand-limited (ADR-069) */
         cmd.enable = true;
 
         const float vbus = (g_mc_inject.vbus_v > 1.0f) ? g_mc_inject.vbus_v : 24.0f;

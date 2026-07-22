@@ -135,6 +135,7 @@ void MC_OdStore_LoadDefaults(void)
     g_od.foc_iq_kp = 1.7f;   g_od.foc_iq_ki = 1700.0f;
     g_od.hb_cur_kp = 5.55f;  g_od.hb_cur_ki = 6300.0f;  /* brushed current PI gains, set directly (ADR-049) */
     g_od.foc_voltage_limit_v = 13.8f;
+    g_od.current_demand_limit_a = 0.0f;   /* 0x2400:8 soft current-demand ceiling; 0 = disabled (ADR-069) */
 
     /* Encoder / estimator */
     g_od.est_electrical_offset_rad = 0.0f;   /* loaded from flash by the persistence store */
