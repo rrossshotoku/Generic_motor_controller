@@ -44,6 +44,11 @@
  *  fill in MC_FastLoop_20kHz / MC_MotionLoop_1kHz / MC_SlowLoop_10_100Hz.
  */
 
+/* The persisted parameter set must fit the store payload (ADR-070). If this fails, raise
+   MC_PARAM_STORE_MAX_PAYLOAD (the flash slot is 2 KB, so there is room) -- do NOT shrink the blob. */
+_Static_assert(sizeof(MC_Params_t) <= MC_PARAM_STORE_MAX_PAYLOAD,
+               "MC_Params_t exceeds the persistent-store payload cap");
+
 /* Slow-loop hand-off flag: set in the medium ISR, consumed in the main loop. */
 static volatile uint8_t s_slow_pending;
 
@@ -1739,7 +1744,8 @@ static void persistence_service_slow(void)
         MC_PersistentStore_ServiceSlow();
         g_mc_debug.store_valid = MC_PersistentStore_HasValid();
     }
-    g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
+    g_mc_debug.store_save_pending  = MC_PersistentStore_SavePending();
+    g_mc_debug.store_blob_truncated = MC_Od_PersistTruncated();   /* recurrence guard (ADR-070) */
 }
 
 /* Winding thermal model service (ADR-065/068 phase 3): advance the I²t estimate at the slow rate

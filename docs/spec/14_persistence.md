@@ -73,13 +73,23 @@ bank 2 pages 126/127 (0x0807F000/0x0807F800), reserved in the linker. Alignment 
 save command (`0x2800:1`) latch a save; the slow loop writes it when the power stage is off; boot
 reloads and applies it.
 
-The blob buffer is `MC_PARAMS_OD_BLOB_MAX` = **448 B** (ADR-044). It MUST stay ≥ the total PERSIST
-size (~318 B currently): `MC_Od_GatherPersistent` **silently drops** entries past the cap — at the old
-256 B it truncated `0x2600:6/7`, `0x2700:3/4`, and `0x6081-5`. Re-check the cap (and keep
-`sizeof(MC_Params_t) ≤ MC_PARAM_STORE_MAX_PAYLOAD`). Because the blob is a self-describing TLV keyed
-by `{index, sub}`, **adding** a PERSIST entry is backward-compatible: an old record simply lacks the
-new key, which then keeps its default — so no `MC_PARAM_STORE_VERSION` bump is needed for additions
-(bump only when a field's type/meaning changes or `MC_Params_t` grows past the buffer).
+The blob buffer is `MC_PARAMS_OD_BLOB_MAX` = **640 B** (ADR-070; was 256→448→640). It MUST stay ≥ the
+total motor-owned PERSIST size (**~473 B currently**): `MC_Od_GatherPersistent` **silently drops**
+entries past the cap, highest-index first — at 256 B it truncated `0x2600:6/7`, `0x2700:3/4`,
+`0x6081-5` (ADR-044); at 448 B it truncated `0x2700:11 position_recall_enable` + the `0x2930` notch
+entries, so "position recall won't persist" (ADR-070). Two guards now catch this:
+
+- **Compile-time:** `_Static_assert(sizeof(MC_Params_t) ≤ MC_PARAM_STORE_MAX_PAYLOAD)` (768 B; slot
+  is 2 KB). If it fails, **raise the payload cap** — never shrink the PERSIST set.
+- **Runtime:** `MC_Od_PersistTruncated()` → `g_mc_debug.store_blob_truncated` trips when a save drops
+  an entry. **When it trips, raise `MC_PARAMS_OD_BLOB_MAX`.**
+
+**Growing the blob is backward-compatible** (ADR-070): `od_blob` is the **last** field of
+`MC_Params_t`, so a shorter old record front-loads and `MC_PersistentStore_Read` zero-fills the grown
+tail — `calib` and all previously-saved entries survive with **no `MC_PARAM_STORE_VERSION` bump**.
+Likewise, **adding** a PERSIST entry needs no bump (the TLV is keyed by `{index, sub}`; an old record
+just lacks the new key → default). Bump the version only if a field's type/meaning changes or the
+on-flash layout of the fixed `calib` header changes.
 
 ## Position-recall journal (ADR-067)
 

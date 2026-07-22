@@ -12,8 +12,10 @@
  *  MC_CalibData_t). Writes happen only in the slow/background context.
  */
 #define MC_PARAM_STORE_MAGIC       (0x4D435046u) /* 'MCPF' */
-#define MC_PARAM_STORE_VERSION     (3u)   /* v3 (ADR-044): od_blob 256->448 B (256 truncated PERSIST entries); old records rejected -> re-save */
-#define MC_PARAM_STORE_MAX_PAYLOAD (512u)
+#define MC_PARAM_STORE_VERSION     (3u)   /* v3 (ADR-044). NOT bumped for the ADR-070 blob growth 448->640 B:
+                                             MC_PersistentStore_Read now front-loads a shorter old record and
+                                             zero-fills the grown tail, so old v3 records stay valid (no re-save). */
+#define MC_PARAM_STORE_MAX_PAYLOAD (768u)  /* >= sizeof(MC_Params_t) (~668 B with a 640 B blob); slot is 2 KB (ADR-070) */
 
 /** @brief On-flash record header (16 bytes; CRC32 covers the first 12 bytes + payload). */
 typedef struct
@@ -31,7 +33,10 @@ MC_Status_t MC_PersistentStore_Init(void);
 bool MC_PersistentStore_HasValid(void);
 /** @brief True if a save has been requested but not yet written. */
 bool MC_PersistentStore_SavePending(void);
-/** @brief Copy the active payload out; @p size must equal the stored payload size. */
+/** @brief Copy the active payload out. @p size may be >= the stored size: the stored bytes are
+ *  front-copied and any excess (a struct that grew since the record was written) is zero-filled,
+ *  so a payload whose trailing field is a variable-length blob stays backward-compatible (ADR-070).
+ *  A @p size smaller than the stored payload is rejected (MC_ERR_RANGE). */
 MC_Status_t MC_PersistentStore_Read(void *dst, uint16_t size);
 /** @brief Latch a payload to be written to the inactive slot by ServiceSlow. */
 MC_Status_t MC_PersistentStore_RequestSave(const void *src, uint16_t size);

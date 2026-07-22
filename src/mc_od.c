@@ -285,15 +285,23 @@ MC_OdStatus_t MC_Od_WriteFloat(uint16_t index, uint8_t subindex, float value)
 
 /* ===== Persistent-entry serialization (ADR-023): the params store gathers every MC_IF_F_PERSIST
    OD entry on save and restores them on boot, so the `persistent` flag finally means something. ===== */
+
+/* Recurrence guard (ADR-070): true if the last gather ran out of buffer and DROPPED persistent
+   entries -- the silent failure that hid the ADR-044 and ADR-067 truncations. Mirrored to the watch
+   window so an overflow is visible instead of manifesting as "a setting won't persist". */
+static bool s_persist_truncated = false;
+bool MC_Od_PersistTruncated(void) { return s_persist_truncated; }
+
 uint16_t MC_Od_GatherPersistent(uint8_t *buf, uint16_t cap)
 {
     uint16_t n = 0u;
+    s_persist_truncated = false;
     for (uint32_t i = 0u; i < MC_OD_TABLE_COUNT; i++)
     {
         const MC_OdEntry_t *e = &s_od_table[i];
         if (!e->persistent) { continue; }
         const uint32_t sz = type_size(e->type);
-        if (((uint32_t)n + 4u + sz) > (uint32_t)cap) { break; }   /* index(2)+sub(1)+len(1)+value */
+        if (((uint32_t)n + 4u + sz) > (uint32_t)cap) { s_persist_truncated = true; break; }   /* index(2)+sub(1)+len(1)+value */
         buf[n++] = (uint8_t)(e->index & 0xFFu);
         buf[n++] = (uint8_t)(e->index >> 8);
         buf[n++] = e->subindex;

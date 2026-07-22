@@ -92,6 +92,7 @@ typedef struct
     /* --- Persistence (flash param store) --- */
     bool     store_valid;         /**< A valid calibration record is loaded/stored. */
     bool     store_save_pending;  /**< A save is latched, awaiting the slow loop (drive off). */
+    bool     store_blob_truncated;/**< PERSIST blob overflowed on the last save -> entries dropped (ADR-070). */
 } MC_Debug_t;
 
 /** @brief Command/inject fields written from the watch window during bring-up.

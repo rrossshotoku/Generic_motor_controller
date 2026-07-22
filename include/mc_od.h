@@ -78,6 +78,10 @@ MC_OdStatus_t MC_Od_ReadRaw(uint16_t index, uint8_t subindex, void *dst, uint32_
  *  @return bytes written (stops early, without overflowing, if @p cap is reached). */
 uint16_t MC_Od_GatherPersistent(uint8_t *buf, uint16_t cap);
 
+/** @brief True if the last MC_Od_GatherPersistent DROPPED entries for lack of buffer (ADR-070).
+ *  A recurrence guard for the silent-truncation bug: grow MC_PARAMS_OD_BLOB_MAX when this trips. */
+bool MC_Od_PersistTruncated(void);
+
 /** @brief Restore persistent OD entries previously serialized by MC_Od_GatherPersistent.
  *  Records whose index/sub is unknown or whose size no longer matches are skipped. */
 void MC_Od_RestorePersistent(const uint8_t *buf, uint16_t len);

@@ -27,16 +27,20 @@ typedef struct
  *  {index(LE16), subindex, len, value} records; @ref od_blob_len bytes are valid. This is the
  *  flash store payload (was bare MC_CalibData_t in v1; MC_PARAM_STORE_VERSION bumped to 2). */
 /* Capacity for the serialized PERSIST OD records ({index,sub,len,value}; 8 B per F32). MUST stay >=
-   the total of every motor-owned PERSIST entry (~318 B as of ADR-044) -- MC_Od_GatherPersistent
-   SILENTLY drops entries once full, so undersizing loses the highest-index ones (256 dropped
-   0x2600:6/7, 0x2700:3/4, 0x6081-5). Keep sizeof(MC_Params_t) <= MC_PARAM_STORE_MAX_PAYLOAD (512);
-   bump MC_PARAM_STORE_VERSION when this changes. */
-#define MC_PARAMS_OD_BLOB_MAX (448u)
+   the total of every motor-owned PERSIST entry -- MC_Od_GatherPersistent SILENTLY drops entries
+   once full, losing the highest-index ones. History: 256 B dropped 0x2600:6/7, 0x2700:3/4, 0x6081-5
+   (ADR-044 -> 448 B); 448 B then dropped 0x2700:11 position_recall_enable + the 0x2930 notch entries
+   once thermal/dither/recall/current-demand PERSIST entries pushed the total to 473 B (ADR-070 ->
+   640 B, ~167 B / ~20 F32 headroom). Keep sizeof(MC_Params_t) <= MC_PARAM_STORE_MAX_PAYLOAD.
+   Growing this is now BACKWARD-COMPATIBLE (no MC_PARAM_STORE_VERSION bump): od_blob is the LAST
+   field, so a shorter old record front-loads and MC_PersistentStore_Read zero-fills the grown tail
+   (ADR-070) -- calib + all previously-saved entries survive the update. */
+#define MC_PARAMS_OD_BLOB_MAX (640u)
 typedef struct
 {
     MC_CalibData_t calib;                          /**< Calibration (offsets, home, phase order). */
     uint16_t       od_blob_len;                    /**< Valid bytes in od_blob. */
-    uint8_t        od_blob[MC_PARAMS_OD_BLOB_MAX];  /**< Serialized persistent OD entries. */
+    uint8_t        od_blob[MC_PARAMS_OD_BLOB_MAX];  /**< Serialized persistent OD entries (MUST stay last). */
 } MC_Params_t;
 
 #endif /* MC_CALIB_DATA_H */

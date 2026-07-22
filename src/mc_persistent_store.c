@@ -97,9 +97,14 @@ bool MC_PersistentStore_SavePending(void){ return s_dirty; }
 
 MC_Status_t MC_PersistentStore_Read(void *dst, uint16_t size)
 {
-    if (!s_has_valid)   { return MC_ERR_NOT_FOUND; }
-    if (size != s_size) { return MC_ERR_RANGE; }
-    memcpy(dst, s_payload, size);
+    if (!s_has_valid)  { return MC_ERR_NOT_FOUND; }
+    /* Backward-compatible read (ADR-070): accept a caller struct that has GROWN since the record was
+       written (size > stored) -- front-copy the stored bytes and zero the grown tail. Valid only
+       because the growable field (od_blob) is LAST in MC_Params_t, so earlier fields keep their
+       offsets. A caller SMALLER than the stored payload is rejected (can't safely map / downgrade). */
+    if (size < s_size) { return MC_ERR_RANGE; }
+    memcpy(dst, s_payload, s_size);
+    if (size > s_size) { memset((uint8_t *)dst + s_size, 0, (size_t)(size - s_size)); }
     return MC_OK;
 }
 
