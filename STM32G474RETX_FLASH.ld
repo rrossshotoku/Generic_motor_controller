@@ -45,15 +45,25 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
-  /* Dual-bootloader flash map (REQ-0015 / ADR-064, boot/README.md):
+  /* Dual-bootloader flash map (REQ-0015 / ADR-064 + ADR-067, boot/README.md):
        0x08000000..0x08007FFF (32K)  bootloader
        0x08008000..0x080087FF (2K)   boot-flag page (STAY/CLEAR blob)
-       0x08008800..0x0807EFFF (474K) app  <-- this region
-       0x0807F000..0x0807FFFF (4K)   NV parameter store (bank2 pg126/127) -- reserved
-     The app boots only via the bootloader, which sets VTOR to 0x08008800 before
-     jumping; main() also sets SCB->VTOR to 0x08008800 as insurance. */
-  FLASH    (rx)    : ORIGIN = 0x8008800,   LENGTH = 474K
+       0x08008800..0x0807DFFF (470K) app                  <-- FLASH region below
+       0x0807E000..0x0807EFFF (4K)   POS_RECALL journal    (bank2 pg124/125), ADR-067
+       0x0807F000..0x0807FFFF (4K)   CONFIG param store    (bank2 pg126/127), ADR-010
+     The app boots only via the bootloader (VTOR -> 0x08008800; main() re-sets it as
+     insurance). Both POS_RECALL and CONFIG survive every OTA update with NO bootloader change:
+     the OTA erase is image-sized and this FLASH region caps the app at 470K (ends at pg123), so
+     an update never reaches pg124..127. (ADR-067 -- app-only, no reflash.) */
+  FLASH      (rx)  : ORIGIN = 0x8008800,   LENGTH = 470K
+  POS_RECALL (r)   : ORIGIN = 0x807E000,   LENGTH = 4K
+  CONFIG     (r)   : ORIGIN = 0x807F000,   LENGTH = 4K
 }
+
+/* Position-recall journal (ADR-067): located by the firmware via these linker symbols and
+   written at runtime by mc_pos_recall -- not placed here by the linker. */
+_pos_recall_origin = ORIGIN(POS_RECALL);
+_pos_recall_length = LENGTH(POS_RECALL);
 
 /* Sections */
 SECTIONS

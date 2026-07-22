@@ -16,8 +16,12 @@
 /* Dual-bank page layout of the app region (2 KB pages, DBANK=1):
  *   bank1 pages 17..127  (0x08008800..0x0803FFFF)  -> 111 pages
  *   bank2 pages 0..125   (0x08040000..0x0807EFFF)  -> 126 pages
- * Boot-flag (bank1 pg16) and config A/B (bank2 pg126/127) are deliberately
- * excluded so an update preserves them. */
+ * Boot-flag (bank1 pg16) and config A/B (bank2 pg126/127) are excluded here so an update
+ * preserves them. The position-recall journal (bank2 pg124/125, ADR-067) needs NO bootloader
+ * change: the OTA erase is IMAGE-SIZED (only the pages the image occupies), and the app linker
+ * region caps the app at 470K (ends at bank2 pg123), so an image can never reach pg124/125.
+ * This cap only binds for an image > 474K, which the linker forbids -- so it never touches the
+ * journal in practice. (Keeps the bootloader unchanged -> no reflash for ADR-067.) */
 #define MC_FLASH_PAGE       2048u  /* 2 KB page */
 #define APP_B1_FIRST_PAGE   17u
 #define APP_B1_NPAGES       111u   /* pages 17..127 */

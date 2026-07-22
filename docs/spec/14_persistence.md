@@ -76,5 +76,20 @@ reloads and applies it.
 The blob buffer is `MC_PARAMS_OD_BLOB_MAX` = **448 B** (ADR-044). It MUST stay ≥ the total PERSIST
 size (~318 B currently): `MC_Od_GatherPersistent` **silently drops** entries past the cap — at the old
 256 B it truncated `0x2600:6/7`, `0x2700:3/4`, and `0x6081-5`. Re-check the cap (and keep
-`sizeof(MC_Params_t) ≤ MC_PARAM_STORE_MAX_PAYLOAD`) and bump `MC_PARAM_STORE_VERSION` when adding
-PERSIST entries.
+`sizeof(MC_Params_t) ≤ MC_PARAM_STORE_MAX_PAYLOAD`). Because the blob is a self-describing TLV keyed
+by `{index, sub}`, **adding** a PERSIST entry is backward-compatible: an old record simply lacks the
+new key, which then keeps its default — so no `MC_PARAM_STORE_VERSION` bump is needed for additions
+(bump only when a field's type/meaning changes or `MC_Params_t` grows past the buffer).
+
+## Position-recall journal (ADR-067)
+
+A **second, independent** flash store for the last-position feature on non-back-drivable incremental
+axes: `POS_RECALL` = bank 2 pages 124/125 (`0x0807E000`, 4 KB), a named linker MEMORY region located
+by `_pos_recall_origin`/`_pos_recall_length`. It is **not** the A/B config store — it is a
+wear-levelled append journal of 256 fixed 16-byte records `{seq, position_rad, marker, crc32}`
+(`mc_pos_recall.c` logic + `mc_pos_recall_port_stm32g474.c` flash ops). The highest-`seq` good-CRC
+record wins; on wrap both pages are erased and the log restarts. Unlike the config store, its writes
+are **not** gated on the power stage being off (the invalidate-on-move-start write fires while the
+drive runs) — safe via bank-2 read-while-write against the bank-1 hot code. Both regions survive OTA
+with no bootloader change: the OTA erase is image-sized and the app is linker-capped at 470 KB (ends
+at bank 2 pg123), so an update never reaches pg124–127.

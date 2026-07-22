@@ -25,6 +25,10 @@ typedef struct
     float    vel_accel_jerk;                         /* 0x2300:8 accel ramp-up jerk [rad/s^3]; 0 = step (ADR-042) */
     uint8_t  holding_enable;                         /* 0x2300:9 1 = hold when stopped (PI provides current); 0 = release after settle (ADR-054) */
     uint8_t  jog_position_mode;                      /* 0x2300:10 0 = direct velocity jog (default); 1 = position-integrated jog (ADR-062) */
+    uint8_t  dither_enable;                          /* 0x2320:1 low-speed anti-stiction dither on/off (ADR-066) */
+    float    dither_speed_threshold_rad_s;           /* 0x2320:2 dither active/faded below |v| this [rad/s] (ADR-066) */
+    float    dither_amplitude_a;                     /* 0x2320:3 dither current amplitude [A] (ADR-066) */
+    float    dither_freq_hz;                         /* 0x2320:4 dither frequency [Hz] (ADR-066) */
     float    foc_id_kp, foc_id_ki, foc_iq_kp, foc_iq_ki, foc_voltage_limit_v; /* 0x2400:1-5 */
     float    hb_cur_kp, hb_cur_ki;                    /* 0x2400:6,7 brushed current PI gains, set directly (ADR-049) */
     float    est_electrical_offset_rad;              /* 0x2500:1 */
@@ -85,6 +89,8 @@ typedef struct
     uint8_t  home_command;                            /* 0x2700:8 1 = run homing, 0 = idle/abort (ADR-057) */
     uint8_t  home_status;                             /* 0x2700:9 RO 0=idle 1=running 2=done 3=failed (ADR-057) */
     float    mech_zero_set_rad;                       /* 0x2700:10 target for SET_MECH_ZERO_AT (midpoint-of-travel centering, ADR-022) */
+    uint8_t  position_recall_enable;                  /* 0x2700:11 RW PERSIST 1=auto-store position + recall on boot (incremental only, ADR-067) */
+    uint8_t  position_recall_status;                  /* 0x2700:12 RO 0=off/N-A 1=recalled-valid 2=stale->homing 3=none stored (ADR-067) */
     uint16_t store_save_command;                     /* 0x2800:1 */
 
     /* --- Telemetry (RO; mirrored from the live control state) --- */
@@ -98,6 +104,7 @@ typedef struct
     float    tlm_bus_voltage_v;                                              /* 0x2600:3 */
     float    thermal_utilisation;    /* 0x2100:4 RO PDO -- thermal x (0=cold, 1=at limit); telemetry-mappable/graphable (ADR-065) */
     float    thermal_derate_factor;  /* 0x2100:5 RO PDO -- current-limit multiplier 0..1; telemetry-mappable/graphable (ADR-065) */
+    float    dither_output_a;        /* 0x2320:5 RO PDO -- dither current being injected now [A] (ADR-066) */
     uint16_t cal_status, store_status;
     uint16_t cal_done_flags;         /* 0x2700:5 RO -- calibration-completeness bitfield (ADR-026) */
 

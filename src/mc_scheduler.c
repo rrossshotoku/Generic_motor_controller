@@ -20,6 +20,8 @@
 #include "mc_freq_sweep.h"   /* stepped-sine current sweep for resonance ID, fast-loop injected (ADR-047) */
 #include "mc_notch.h"        /* band-reject on the current command for resonance suppression (ADR-048) */
 #include "mc_thermal.h"      /* winding I²t thermal model + progressive current-limit derate (ADR-065) */
+#include "mc_dither.h"       /* low-speed anti-stiction current dither (ADR-066) */
+#include "mc_pos_recall.h"   /* persistent last-position journal for non-back-drivable incremental axes (ADR-067) */
 #include "mc_quad_encoder.h" /* TIM2 quadrature count, mirrored to 0x2510:4 (ADR-050) */
 #include "mc_position_controller.h"
 #include "mc_signal_gen.h"
@@ -79,6 +81,9 @@ static bool  s_pos_locked;   /* false until the drive is first enabled; while fa
 #define MC_JOG_LEASH_RAD   1.0f    /* position-integrated jog: the moving reference may lead the actual by at most this [rad] (ADR-062) */
 #define MC_HOME_STILL_EPS  0.01f   /* |mechanical velocity| below this counts as "not moving" [rad/s] (ADR-057) */
 #define MC_HOME_TIMEOUT_MS 30000u  /* homing safety abort if it never settles / trips [ms @ 1 kHz] (ADR-057) */
+#define MC_RECALL_SETTLE_TICKS 100u  /* position-recall settle dwell: MOVING clear this long before storing [100 Hz slow -> 1 s] (ADR-067) */
+#define MC_RECALL_MOVE_EPS 0.01f     /* |mechanical velocity| below this counts as "not moving" for recall [rad/s] (ADR-067) */
+#define MC_RECALL_STORE_EPS 0.001f   /* store-on-change: skip a re-store if the settled position moved less than this [rad] (ADR-067) */
 static bool s_oc_trip;      /* latched over-current trip */
 static uint32_t s_fault_flags_prev; /* previous fault_flags -> per-fault rising-edge counts (ADR-058) */
 static bool s_pwm_on;       /* PWM outputs currently enabled */
@@ -118,6 +123,12 @@ static bool                          s_home_backing_off;  /* homing: stop found 
 static uint32_t                      s_home_backoff_ticks;/* homing back-off dwell counter (ADR-057) */
 static bool                          s_set_zero_at_pending; /* deferred SET_MECH_ZERO_AT: apply mech_zero_set_rad in the medium loop (ADR-022) */
 static bool                          s_homed;             /* incremental encoder zeroed this power-cycle (NOT persisted; gates position recalls) (ADR-057) */
+
+/* Persistent position recall (ADR-067): incremental-axis last-position journal. */
+static bool                          s_recall_applied;      /* startup recall one-shot consumed (checked once, after the first sample) */
+static bool                          s_recall_used;         /* startup recall actually adopted a stored position (drives 0x2700:12 status) */
+static bool                          s_recall_was_moving;   /* previous MOVING state for the store/invalidate edge detector */
+static uint16_t                      s_recall_settle_ticks; /* slow-loop ticks MOVING has stayed clear (settle dwell) */
 
 /* Stage D3: trajectory + position loop (runs in the medium loop; feeds the velocity cascade). */
 static MC_TrajectoryPlanner_t        s_traj;
@@ -420,6 +431,13 @@ static void od_mirror_live(void)
     g_od.store_status    = (uint16_t)((MC_PersistentStore_HasValid()   ? MC_IF_STORE_VALID   : 0u)
                                     | (MC_PersistentStore_SavePending() ? MC_IF_STORE_PENDING : 0u));
 
+    /* Position-recall status (0x2700:12, ADR-067): 0 off/N-A, 1 recalled-valid (homing skipped),
+       2 stale -> homing required (latest record INVALID = power lost mid-move), 3 nothing stored. */
+    if ((g_od.position_recall_enable == 0u) || s_pos_sample.absolute) { g_od.position_recall_status = 0u; }
+    else if (s_recall_used)                                           { g_od.position_recall_status = 1u; }
+    else if (MC_PosRecall_HasAnyRecord())                             { g_od.position_recall_status = 2u; }
+    else                                                              { g_od.position_recall_status = 3u; }
+
     /* Calibration completeness (0x2700:5, ADR-026): derived from existing state. A set bit means that
        calibration currently has valid data; a clear bit means it is still outstanding. */
     {
@@ -562,6 +580,7 @@ void MC_Framework_Init(void)
     /* Object dictionary: seed defaults (its gains match the configs seeded above). */
     MC_Od_Init();
     MC_Thermal_Init();      /* winding I²t thermal model (ADR-065); safe disabled default */
+    MC_Dither_Init();       /* low-speed anti-stiction dither (ADR-066); off by default */
     MC_Comms_Init();        /* SPI protocol handler (transport DMA wired in F2b) */
     MC_BootMeta_Init();     /* read boot flag; arm the healthy-window flag clear (REQ-0015) */
     MC_ModeManager_Init();  /* CiA-402 drive state machine (E1) */
@@ -594,6 +613,11 @@ void MC_Framework_Init(void)
         }
     }
     g_mc_debug.store_valid = MC_PersistentStore_HasValid();
+
+    /* Position-recall journal (ADR-067): scan the dedicated POS_RECALL flash region for the latest
+       stored position. Whether it is adopted (skipping homing) is decided one-shot in the medium
+       loop, once the encoder type + first sample are known. */
+    MC_PosRecall_Init();
 
     /* Apply the selected drive backend (0x2000:6 motor_backend_sel, persisted; default 0 = BLDC/FOC).
        Per-board, so it is read once here at boot: it picks the dispatch path and the current-sense ADC
@@ -956,6 +980,27 @@ void MC_MotionLoop_1kHz(void)
                 while (home_rel < -3.14159265358979324f) { home_rel += 6.28318530717958648f; }
                 MC_StateEstimator_SeedContinuous(&s_est, s_home_offset_rad + home_rel);
             }
+        }
+    }
+
+    /* One-shot startup position recall (ADR-067): for a non-back-drivable INCREMENTAL axis with the
+       feature on, adopt the last stored position instead of demanding a re-home. Runs once, after the
+       first good sample, while the drive is still off (before any motion). Absolute (SSI) axes
+       self-locate and skip this. The incremental estimate accumulates from the power-on count (~0),
+       so we reconstruct the home anchor to make position_actual read the stored value at the current
+       count: home-relative = position - offset  =>  offset = position - stored_P. */
+    if (sample_ok && !s_recall_applied)
+    {
+        s_recall_applied = true;
+        if ((g_od.position_recall_enable != 0u) && !s_pos_sample.absolute &&
+            MC_PosRecall_HasValidStored())
+        {
+            s_home_offset_rad          = s_est.mechanical.position_rad - MC_PosRecall_StoredPosition();
+            g_mc_debug.home_offset_rad = s_home_offset_rad;
+            s_homed                    = true;   /* recalled position substitutes for homing (ADR-067) */
+            s_recall_used              = true;
+            s_recall_was_moving        = false;
+            s_recall_settle_ticks      = MC_RECALL_SETTLE_TICKS;  /* already settled at the recalled point */
         }
     }
 
@@ -1544,6 +1589,7 @@ void MC_MotionLoop_1kHz(void)
         {
             MC_VelocityController_Reset(&s_vel);   /* park the integrator -> no windup, bumpless resume */
             s_iq_cmd_published           = 0.0f;
+            g_od.dither_output_a         = 0.0f;
             g_mc_debug.vel_demand_rad_s  = vdem;
             g_mc_debug.vel_torque_cmd_nm = 0.0f;
             g_mc_debug.vel_iq_cmd_a      = 0.0f;
@@ -1559,6 +1605,16 @@ void MC_MotionLoop_1kHz(void)
 
             const float iq_notched = MC_Notch_Update(&s_iq_notch, fcmd.iq_a);   /* current-command notch (ADR-048) */
             s_iq_cmd_published = g_od.notch_enable ? iq_notched : fcmd.iq_a;
+            /* Low-speed anti-stiction dither (ADR-066): add a zero-mean sine current, faded out
+               as |velocity| -> threshold. AFTER the notch so it isn't filtered; the current limit
+               downstream keeps it bounded. */
+            MC_Dither_SetParams(g_od.dither_enable != 0u, g_od.dither_speed_threshold_rad_s,
+                                g_od.dither_amplitude_a, g_od.dither_freq_hz);
+            {
+                const float dith = MC_Dither_Update(vact, MC_MOTION_DT_S);
+                s_iq_cmd_published  += dith;
+                g_od.dither_output_a = dith;
+            }
             g_mc_debug.vel_demand_rad_s  = vdem;
             g_mc_debug.vel_torque_cmd_nm = treq.torque_nm;
             g_mc_debug.vel_iq_cmd_a      = fcmd.iq_a;
@@ -1568,6 +1624,7 @@ void MC_MotionLoop_1kHz(void)
     {
         s_vel_on = false;
         s_iq_cmd_published = 0.0f;
+        g_od.dither_output_a = 0.0f;
         g_mc_debug.vel_iq_cmd_a = 0.0f;
     }
 
@@ -1606,6 +1663,48 @@ void MC_MotionLoop_1kHz(void)
     }
 
     od_mirror_live();   /* publish live state into the OD store */
+}
+
+/* Position-recall journal service (ADR-067), slow/supervisory context. Incremental axes only, and
+   only once homed (an un-homed position is meaningless and must never be journalled as VALID). On
+   the MOVING rising edge the stored position is invalidated (a mid-move power loss then reverts to
+   NOT_HOMED); after MOVING stays clear for the settle dwell the settled position is stored VALID
+   (store-on-change). Flash writes here are in bank2 (POS_RECALL, pg124/125) -- read-while-write vs
+   the bank1-resident hot ISR code, the same basis the config store relies on -- so they are NOT
+   gated on the power stage being off (the invalidate write inherently fires while the drive runs). */
+static void pos_recall_service_slow(void)
+{
+    if ((g_od.position_recall_enable == 0u) || s_pos_sample.absolute || !s_homed)
+    {
+        s_recall_was_moving   = false;
+        s_recall_settle_ticks = 0u;
+        return;
+    }
+
+    const float v = s_est.mechanical.velocity_rad_per_s;
+    const bool  moving = (v > MC_RECALL_MOVE_EPS) || (v < -MC_RECALL_MOVE_EPS);
+
+    if (moving && !s_recall_was_moving)
+    {
+        MC_PosRecall_MarkMoving();          /* motion started -> stored position is now stale */
+        s_recall_settle_ticks = 0u;
+    }
+    else if (!moving && (s_recall_settle_ticks < MC_RECALL_SETTLE_TICKS))
+    {
+        s_recall_settle_ticks++;
+        if (s_recall_settle_ticks == MC_RECALL_SETTLE_TICKS)
+        {
+            const float p = s_est.mechanical.position_rad - s_home_offset_rad;
+            /* Re-store on a real position change, or whenever the latest record is not VALID
+               (e.g. we invalidated at move start but ended near the same place). */
+            if (!MC_PosRecall_HasValidStored() ||
+                (fabsf(p - MC_PosRecall_StoredPosition()) > MC_RECALL_STORE_EPS))
+            {
+                MC_PosRecall_Store(p);
+            }
+        }
+    }
+    s_recall_was_moving = moving;
 }
 
 void MC_SlowLoop_10_100Hz(void)
@@ -1691,6 +1790,8 @@ void MC_SlowLoop_10_100Hz(void)
         g_mc_debug.store_valid = MC_PersistentStore_HasValid();
     }
     g_mc_debug.store_save_pending = MC_PersistentStore_SavePending();
+
+    pos_recall_service_slow();   /* ADR-067: journal the last position / invalidate on move start */
 
     /* Winding thermal model (ADR-065): advance the I²t estimate at the slow rate (100 Hz) from
        the measured motor-current magnitude, then mirror utilisation + derate to the OD (0x2100:4/5).

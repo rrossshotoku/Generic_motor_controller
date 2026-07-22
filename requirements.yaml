@@ -103,3 +103,26 @@ motor_thermal_model:                                        # ADR-065
   spec_conversion: pc_tool_calculator                       # continuous -> direct; duty -> tau=t_off/N, I_cont solved
   runtime: slow_loop_100hz                                  # derate applied in od_apply_gains; hard OC trip not derated
   default: disabled                                         # enable=0 -> no derate/fault until configured
+low_speed_dither:                                           # ADR-066
+  purpose: anti_stiction_stick_slip                         # zero-mean sine current at low speed
+  waveform: sine                                            # zero-mean -> no velocity bias
+  gate: smooth_speed_fade                                   # fade = clamp((thresh-|v|)/thresh,0,1); no hard on/off
+  inject: current_command_after_notch                       # s_iq_cmd_published, bounded by the current limit
+  runtime: medium_loop_1khz                                 # freq useful to ~200-300 Hz
+  od_block: 0x2320                                          # :1 enable :2 speed_threshold :3 amplitude_a :4 freq_hz :5 output_a(RO)
+  default: disabled                                         # enable=0 -> no injection until configured
+position_recall:                                            # ADR-067
+  purpose: skip_homing_on_non_backdrivable_incremental      # store position after each move; recall on boot instead of NOT_HOMED
+  applies_to: incremental_encoder_only                      # absolute (SSI) axes self-locate -> inert
+  storage: dedicated_journal                                # POS_RECALL bank2 pg124/125 (4K), separate from config store
+  flash_map: linker_named_regions                           # POS_RECALL + CONFIG MEMORY regions; FLASH 474K->470K; app-size cap protects the journal
+  bootloader_change: none                                   # image-sized OTA erase + 470K app cap -> update never reaches pg124/125
+  record: [seq, position_rad, marker, crc32]                # 16 bytes; highest-seq good-crc authoritative; erase-both-and-restart on wrap
+  motion_signal: movement_status_moving                     # reuse MC_IF_MOVE_MOVING; recall adds a ~1 s settle dwell
+  store: on_settle_and_change                               # VALID after MOVING clear for the dwell; store-on-change (<1 mrad skip)
+  invalidate: on_move_start                                 # INVALID on the MOVING rising edge -> mid-move power loss reverts to NOT_HOMED
+  store_gate: enabled_incremental_and_homed                 # never journal an un-homed (meaningless) position as VALID
+  write_context: slow_loop_bank2_rww                        # not power-off gated (invalidate fires while moving); bank2 read-while-write
+  runtime: slow_loop_100hz                                  # boot recall one-shot in the medium loop before the drive is enabled
+  od_entries: [0x2700:11 enable, 0x2700:12 status]          # enable U8 RW PERSIST; status U8 RO 0 off/1 recalled/2 stale/3 none
+  default: disabled                                         # enable=0 -> normal homing until configured
