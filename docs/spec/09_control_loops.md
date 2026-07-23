@@ -97,6 +97,12 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   default). Output iq published to the fast loop as an atomic float. The applied gains are
   `vel_kp·load` / `vel_ki·load` where `load = clamp(vel_load_factor, 0.3, 2.0)` (`0x2300:5`, default
   1.0) — an operator load multiplier the CMC's payload slider drives (ADR-034).
+  **Stop-integrator bleed (ADR-074):** when commanded to stop (`|demand| ≈ 0`) and `|velocity| <
+  vel_stop_bleed_v_th` (`0x2300:11`), the integrator is fast-unwound at `vel_stop_bleed_rate`
+  (`0x2300:12`, [1/s]) each tick before the PI — so its wound-up brake can't push the velocity past
+  zero into a reverse (the on-camera recoil at the end of a jog); the proportional term alone brakes
+  to rest without overshoot. Both 0 = off. Gated on the demand, so it engages on a jog stop but stays
+  inert during a shot-recall landing (demand goes negative to correct) → position accuracy preserved.
 - **Torque/current request** (D2, ADR-012): `mc_current_request.c` — torque = velocity
   correction + inertia·accel_ff + friction_ff, clamped; iq = torque/Kt clamped to the current
   limit, id = 0. Accel/friction FF present but 0 until D3 / friction ID.

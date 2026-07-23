@@ -142,3 +142,13 @@ position_deadband:                                          # ADR-071
   od_entry: 0x2200_5_position_deadband_rad                  # F32 RW PERSIST; in the position-loop block -> GUI "Position loop gains"
   rule: keep_below_target_reached_window                    # < 0.01 rad so TARGET_REACHED still reports when parked (not enforced)
   default: disabled                                         # 0 = no deadband, no behaviour change until set
+velocity_stop_integrator_bleed:                            # ADR-074
+  purpose: anti_recoil_at_end_of_jog                       # stop the velocity PI overshooting zero into a reverse twitch (broadcast)
+  cause: integrator_windup_braking_past_zero               # wound-up brake persists past velocity 0 -> reverse; P-only brake doesn't overshoot
+  action: fast_unwind_integrator_before_pi                 # integrator -= integrator*min(rate*dt,1) each tick while armed
+  trigger: demand_near_zero_and_low_velocity               # |demand|<1e-3 AND |actual|<v_th -> engages on stops, not slow deliberate moves
+  scope: self_scoped_by_demand_gate                        # firm on jog stop (demand parks at 0); fleeting on shot-recall (demand goes negative to correct) -> position accuracy kept
+  od_entries: [0x2300:11 v_th_rad_s, 0x2300:12 rate_1_s]   # both F32 RW PERSIST; GUI "Velocity loop gains"
+  rejected: [hard_clear_jerks, freeze_keeps_windup, sign_opposition_fires_too_late]
+  caveat: gravity_tilt_may_sag_before_hold                 # keep rate modest / rely on CMC HALT-timing (ADR-072)
+  default: disabled                                        # v_th=0 or rate=0 -> no bleed, no behaviour change until set

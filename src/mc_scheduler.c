@@ -306,6 +306,8 @@ static void od_apply_gains(void)
     s_vel_cfg.pid.output_min     = -tlim;  s_vel_cfg.pid.output_max     = tlim;
     s_vel_cfg.pid.integrator_min = -tlim;  s_vel_cfg.pid.integrator_max = tlim;
     s_vel_cfg.torque_output_limit_nm = tlim;
+    s_vel_cfg.stop_bleed_v_th  = g_od.vel_stop_bleed_v_th;    /* 0x2300:11 stop-integrator bleed threshold (ADR-074) */
+    s_vel_cfg.stop_bleed_rate  = g_od.vel_stop_bleed_rate;    /* 0x2300:12 stop-integrator bleed rate [1/s] (ADR-074) */
     s_torque_cfg.current_limit_a        = i_lim;   /* thermally-derated operational limit (ADR-065) */
     s_torque_cfg.torque_limit_nm        = tlim;
     s_torque_cfg.torque_constant_nm_per_a = kt;
