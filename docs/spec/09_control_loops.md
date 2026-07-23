@@ -129,11 +129,14 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   `velocity_demand = velocity_ff_gain·trajectory_velocity_ff + correction` → velocity loop (the FF gain
   `0x2200:4`, default 1.0, trims the feedforward ratio; ADR-031); `accel_ff` →
   the torque request's inertia slot. `target_reached` → statusword bit
-  `MC_IF_SW_TARGET_REACHED (0x0400)` **and** `movement_status` `MC_IF_MOVE_ON_TARGET`: true only when
-  the plan is `complete`, the hold is still the CMC's commanded target (`at_cmd_target` — a joystick
-  jog de-asserts it, ADR-056), and `|error| < window`. The **window is `position_deadband_rad`**
-  (`0x2200:5`) so "on the shot" matches where the axis parks under the deadband, falling back to
-  `MC_POS_TARGET_WINDOW_RAD` (0.01 rad) when the deadband is 0 (ADR-076).
+  `MC_IF_SW_TARGET_REACHED (0x0400)` **and** `movement_status` `MC_IF_MOVE_ON_TARGET` (published
+  together from `od_mirror_live`): true only when the plan is `complete`, the hold is still the CMC's
+  commanded target (`at_cmd_target` — a joystick jog de-asserts it, ADR-056), and `|error| < window`.
+  The **window is `position_deadband_rad`** (`0x2200:5`) so "on the shot" matches where the axis parks
+  under the deadband, falling back to `MC_POS_TARGET_WINDOW_RAD` (0.01 rad) when the deadband is 0
+  (ADR-076). **It is latched and survives the drive being disabled** after the move (ADR-077): an axis
+  parked on the shot with the OFF idle policy (`axis_holding_enable = 0`, de-energised) still reports
+  on-shot; it drops on a joystick jog, a new move, or if back-driven beyond the deadband.
   **Position-integrated jog FF (ADR-073):** the jog (`jog_position_mode = 1`) integrates the stick
   velocity into the position reference; its velocity feedforward is the **actual per-tick advance of
   the clamped reference** `(s_pos_hold_rad − prev)/dt` (so it collapses to 0 under the leash / soft

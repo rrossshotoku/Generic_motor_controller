@@ -135,6 +135,7 @@ static bool                          s_pos_on;            /* position loop activ
 static float                         s_accel_ff_rad_s2;   /* trajectory accel feedforward -> torque request */
 static float                         s_vel_ff_gain;       /* velocity FF ratio in the position cascade (0x2200:4, ADR-031) */
 static float                         s_jog_ref_vel;       /* position-jog reference velocity (Δref/dt) -> velocity FF (ADR-073); 0 when not jogging */
+static float                         s_shot_pos_rad;      /* home-relative position of the last reached CMC target -> ON_TARGET survives drive-disable (ADR-077) */
 static float                         s_pos_hold_rad;      /* held position when in position mode with no active plan */
 
 /* Loop-tuning test-signal overlay (ADR-030): an on-motor generator drives the selected loop's reference. */
@@ -435,7 +436,7 @@ static void od_mirror_live(void)
         {
             ms |= MC_IF_MOVE_MOVING;
         }
-        if (g_mc_debug.target_reached) { ms |= MC_IF_MOVE_ON_TARGET; }
+        if (g_mc_debug.target_reached) { ms |= MC_IF_MOVE_ON_TARGET; g_od.statusword |= MC_IF_SW_TARGET_REACHED; }  /* ON_TARGET / TARGET_REACHED survive drive-disable (ADR-077) */
         /* Soft position limits (ADR-040/043): flag AT_LIMIT_LO/HI when at/past a manually-set limit.
            Gated on pos_limits_active() = a real band AND the mechanical zero set (home-relative). */
         if (pos_limits_active())
@@ -1497,7 +1498,10 @@ void MC_MotionLoop_1kHz(void)
            Falls back to MC_POS_TARGET_WINDOW_RAD when the deadband is off (0) so the bit stays reachable. */
         const float twin = (s_pos_cfg.deadband_rad > 0.0f) ? s_pos_cfg.deadband_rad : MC_POS_TARGET_WINDOW_RAD;
         const bool reached = complete && at_cmd_target && (perr < twin) && (perr > -twin);
-        if (reached) { g_od.statusword |= MC_IF_SW_TARGET_REACHED; }
+        /* Latch the shot position when reached so ON_TARGET can survive the drive being disabled
+           afterwards (the OFF idle policy, 0x3044=0 on high-stiction axes) -- see the else branch and
+           od_mirror_live. TARGET_REACHED / ON_TARGET are published in od_mirror_live from this flag. */
+        if (reached) { s_shot_pos_rad = p_dem; }
 
         g_mc_debug.pos_demand_rad = p_dem;
         g_mc_debug.pos_actual_rad = p_act;
@@ -1513,7 +1517,24 @@ void MC_MotionLoop_1kHz(void)
         if (s_pos_on) { s_traj.active = false; }
         s_pos_on          = false;
         s_accel_ff_rad_s2 = 0.0f;
-        g_mc_debug.target_reached = false;
+        /* ON_TARGET when the position cascade isn't running (ADR-077). If the drive is DISABLED (e.g. the
+           OFF idle policy parked us on the shot and dropped the drive), keep it latched while the axis
+           stays within the deadband of the last reached shot -- drop it only if back-driven off. If the
+           drive is ENABLED but out of position mode (a velocity-mode joystick jog), we've moved off the
+           shot -> clear. */
+        if (!s_eff_drive)
+        {
+            if (g_mc_debug.target_reached)
+            {
+                const float p_act = s_est.mechanical.position_rad - s_home_offset_rad;
+                const float twin  = (s_pos_cfg.deadband_rad > 0.0f) ? s_pos_cfg.deadband_rad : MC_POS_TARGET_WINDOW_RAD;
+                if (fabsf(p_act - s_shot_pos_rad) > twin) { g_mc_debug.target_reached = false; }
+            }
+        }
+        else
+        {
+            g_mc_debug.target_reached = false;
+        }
     }
 
     /* Stage D2: velocity cascade -> torque request -> iq, published to the fast loop. */
