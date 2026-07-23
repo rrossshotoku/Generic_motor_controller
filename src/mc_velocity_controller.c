@@ -33,14 +33,15 @@ float MC_VelocityController_Update(MC_VelocityController_t *ctrl,
 {
     ctrl->velocity_error_rad_per_s = velocity_demand_rad_per_s - velocity_actual_rad_per_s;
 
-    /* Stop-integrator bleed (ADR-074). When commanded to stop (demand ~ 0) and actually slow
+    /* Stop-integrator bleed (ADR-074). When enabled, commanded to stop (demand ~ 0) and actually slow
        (|actual| < v_th), fast-unwind the integrator BEFORE this tick's PI runs -- its wound-up
        braking is what pushes the velocity past zero into a reverse (the on-camera recoil). The
        proportional term alone brakes to rest without overshoot, so draining the integral gives a
-       clean stop. First-order decay at `rate` [1/s]; disabled when v_th or rate is 0. Gated on the
-       demand, so it engages firmly on a jog stop (demand parks at 0) but only fleetingly at a
-       shot-recall landing (demand kisses 0 then goes negative to correct) -- leaving the position
-       loop free to land on target. */
+       clean stop. DIRECTION-SYMMETRIC: the trigger uses |demand|/|actual| and the decay is
+       integrator*(1-k), which drains a negative windup (braking a +CW move) or a positive windup
+       (braking a -CCW move) identically. Gated on the demand, so it engages firmly on a jog stop
+       (demand parks at 0) but only fleetingly at a shot-recall landing (demand kisses 0 then goes
+       negative to correct) -- leaving the position loop free to land on target. */
     if (cfg->stop_bleed_enable &&
         (cfg->stop_bleed_v_th > 0.0f) && (cfg->stop_bleed_factor > 0.0f) &&
         (fabsf(velocity_demand_rad_per_s) < MC_VEL_STOP_DEMAND_EPS) &&
