@@ -122,14 +122,18 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   `position_deadband_rad` (`0x2200:5`, ADR-071, 0 = off) nulls the correction within ±deadband of the
   target so the axis parks instead of hunting; continuous form (subtracts the band outside it → the
   correction reaches 0 smoothly at the edge, no velocity step), applied before the following-error
-  clamp, on the loop's error only (raw `position_error_rad` telemetry is unaffected). Keep it below
-  the target-reached window (0.01 rad). Wired into the scheduler
+  clamp, on the loop's error only (raw `position_error_rad` telemetry is unaffected). Also serves as
+  the **target-reached window** (ADR-076, see below). Wired into the scheduler
   `PROFILE_POSITION` cascade: `NEW_SETPOINT` starts a trapezoidal plan (target `0x607A`, time
   `0x607B`, limits `0x6081/3/4`); each 1 kHz tick trajectory → position loop →
   `velocity_demand = velocity_ff_gain·trajectory_velocity_ff + correction` → velocity loop (the FF gain
   `0x2200:4`, default 1.0, trims the feedforward ratio; ADR-031); `accel_ff` →
-  the torque request's inertia slot. `target_reached` (complete + within window) → statusword
-  bit `MC_IF_SW_TARGET_REACHED (0x0400)`. First cut: from-rest, single fixed window.
+  the torque request's inertia slot. `target_reached` → statusword bit
+  `MC_IF_SW_TARGET_REACHED (0x0400)` **and** `movement_status` `MC_IF_MOVE_ON_TARGET`: true only when
+  the plan is `complete`, the hold is still the CMC's commanded target (`at_cmd_target` — a joystick
+  jog de-asserts it, ADR-056), and `|error| < window`. The **window is `position_deadband_rad`**
+  (`0x2200:5`) so "on the shot" matches where the axis parks under the deadband, falling back to
+  `MC_POS_TARGET_WINDOW_RAD` (0.01 rad) when the deadband is 0 (ADR-076).
   **Position-integrated jog FF (ADR-073):** the jog (`jog_position_mode = 1`) integrates the stick
   velocity into the position reference; its velocity feedforward is the **actual per-tick advance of
   the clamped reference** `(s_pos_hold_rad − prev)/dt` (so it collapses to 0 under the leash / soft

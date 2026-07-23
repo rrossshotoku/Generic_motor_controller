@@ -145,7 +145,7 @@ static float                         s_notch_last_f0 = -1.0f, s_notch_last_bw = 
 static uint8_t                       s_sig_loop;           /* latched target loop while active (MC_IF_TEST_MODE_*) */
 static float                         s_sig_value;          /* generator output this medium tick */
 static float                         s_pos_tune_entry_rad; /* position captured when position-tuning fires (home-relative) */
-#define MC_POS_TARGET_WINDOW_RAD (0.01f)                  /* |error| under this + trajectory complete -> target reached */
+#define MC_POS_TARGET_WINDOW_RAD (0.01f)                  /* target-reached window FALLBACK when position_deadband_rad is 0 (ADR-076); else the deadband is the window */
 
 /* E1: effective drive command (arbitrated commissioning-vs-remote in the medium loop, consumed
    by the fast/medium loops). Plain scalars, single-writer (medium) / reader (fast) — atomic. */
@@ -1492,7 +1492,11 @@ void MC_MotionLoop_1kHz(void)
         s_accel_ff_rad_s2 = a_ff;             /* -> torque request inertia slot */
 
         const float perr = s_pos_ctl.position_error_rad;
-        const bool reached = complete && at_cmd_target && (perr < MC_POS_TARGET_WINDOW_RAD) && (perr > -MC_POS_TARGET_WINDOW_RAD);
+        /* ON_TARGET / TARGET_REACHED tolerance = the position deadband (0x2200:5, ADR-071), so "at the
+           shot" is reported over the same band the axis actually parks in under the deadband (ADR-076).
+           Falls back to MC_POS_TARGET_WINDOW_RAD when the deadband is off (0) so the bit stays reachable. */
+        const float twin = (s_pos_cfg.deadband_rad > 0.0f) ? s_pos_cfg.deadband_rad : MC_POS_TARGET_WINDOW_RAD;
+        const bool reached = complete && at_cmd_target && (perr < twin) && (perr > -twin);
         if (reached) { g_od.statusword |= MC_IF_SW_TARGET_REACHED; }
 
         g_mc_debug.pos_demand_rad = p_dem;
