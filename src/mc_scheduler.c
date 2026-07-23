@@ -206,6 +206,7 @@ static void params_save(void)
 static float s_vel_accel_up;     /* 0x2300:6 [rad/s^2] -- applied from the OD in od_apply_gains */
 static float s_vel_accel_dn;     /* 0x2300:7 [rad/s^2] */
 static float s_vel_accel_jerk;   /* 0x2300:8 [rad/s^3] -- accel ramp-up rate (0 = step) */
+static bool  s_vel_accel_scurve; /* 0x2300:14 -- 1 = anticipatory jerk-limited S-curve (rounds both ends, ADR-075); 0 = ramp-up-only free-fall */
 static float s_slew_vel_prev;    /* limiter state: last output velocity demand [rad/s] */
 static float s_slew_acc_prev;    /* limiter state: last applied acceleration [rad/s^2] */
 
@@ -225,6 +226,35 @@ static float vel_slew_limit(float vel_in)
         s_slew_vel_prev = vel_in;
         s_slew_acc_prev = 0.0f;
         return vel_in;
+    }
+
+    /* Anticipatory jerk-limited S-curve (ADR-075). Rounds BOTH ends of the velocity ramp: the
+       acceleration is held on the phase-plane braking boundary a = sqrt(2*j*|e|) (e = remaining
+       velocity), so it eases to zero exactly as the velocity reaches the target -- no overshoot and,
+       unlike the free-fall path below, no acceleration discontinuity at the setpoint. Re-planned
+       every tick against the live target, so a moving joystick just re-tracks (jerk-bounded); the
+       backstop guarantees no overshoot even mid-tune. Reuses accel_jerk (0x2300:8) as the jerk cap. */
+    if (s_vel_accel_scurve && (s_vel_accel_jerk > 0.0f))
+    {
+        const float j = s_vel_accel_jerk;
+        const float e = vel_in - s_slew_vel_prev;               /* remaining velocity to the target */
+        const float a_stop = sqrtf(2.0f * j * fabsf(e));        /* accel from which we can still stop within |e| */
+        const float a_cap  = (a_stop < alim) ? a_stop : alim;   /* capped by the phase-plane AND accel_up/dn */
+        const float a_tgt  = (e >= 0.0f) ? a_cap : -a_cap;
+
+        float a  = s_slew_acc_prev;
+        float da = a_tgt - a;                                   /* ramp the applied accel toward the target */
+        const float jerk_dt = j * dt;                           /* ...at the jerk limit */
+        if      (da >  jerk_dt) { da =  jerk_dt; }
+        else if (da < -jerk_dt) { da = -jerk_dt; }
+        a += da;
+
+        float vel_out = s_slew_vel_prev + a * dt;
+        if (vel_in >= s_slew_vel_prev) { if (vel_out > vel_in) { vel_out = vel_in; } }  /* backstop: never cross */
+        else                           { if (vel_out < vel_in) { vel_out = vel_in; } }
+        s_slew_acc_prev = (vel_out - s_slew_vel_prev) / dt;     /* store the acceleration actually applied */
+        s_slew_vel_prev = vel_out;
+        return vel_out;
     }
 
     /* Acceleration to land exactly on the demand this tick, capped at the phase's max acceleration. */
@@ -303,6 +333,7 @@ static void od_apply_gains(void)
     s_vel_accel_up   = g_od.vel_accel_up;   /* velocity-demand acceleration ramp (0x2300:6/7/8, ADR-042) */
     s_vel_accel_dn   = g_od.vel_accel_dn;
     s_vel_accel_jerk = g_od.vel_accel_jerk;
+    s_vel_accel_scurve = (g_od.vel_accel_scurve != 0u);   /* 0x2300:14 anticipatory jerk-limited ramp (ADR-075) */
     s_vel_cfg.pid.output_min     = -tlim;  s_vel_cfg.pid.output_max     = tlim;
     s_vel_cfg.pid.integrator_min = -tlim;  s_vel_cfg.pid.integrator_max = tlim;
     s_vel_cfg.torque_output_limit_nm = tlim;

@@ -105,6 +105,14 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   of a jog); the proportional term alone brakes to rest without overshoot. Off by default. Gated on
   the demand, so it engages on a jog stop but stays inert during a shot-recall landing (demand goes
   negative to correct) → position accuracy preserved.
+  **Velocity-demand accel ramp (`vel_slew_limit`, ADR-042):** slews the demand under an acceleration
+  cap (`accel_up`/`accel_dn`, `0x2300:6/7`) with a jerk-limited *rise* (`accel_jerk`, `0x2300:8`) and a
+  free *fall* (asymmetry → no overshoot, but the acceleration is discontinuous at the setpoint).
+  **`vel_accel_scurve` (`0x2300:14`, ADR-075, 0 = off)** upgrades it to an **anticipatory jerk-limited
+  S-curve**: the acceleration is held on the phase-plane braking boundary `a = √(2·jerk·|remaining|)`
+  so it eases to zero exactly as the velocity reaches the setpoint — both ends rounded, continuous
+  acceleration, still no overshoot (re-planned vs the live target each tick; a hard backstop clamps
+  the output so it can never cross the target). Reuses the `accel_jerk` knob.
 - **Torque/current request** (D2, ADR-012): `mc_current_request.c` — torque = velocity
   correction + inertia·accel_ff + friction_ff, clamped; iq = torque/Kt clamped to the current
   limit, id = 0. Accel/friction FF present but 0 until D3 / friction ID.

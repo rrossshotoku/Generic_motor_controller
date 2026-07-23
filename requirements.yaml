@@ -153,3 +153,13 @@ velocity_stop_integrator_bleed:                            # ADR-074
   rejected: [hard_clear_jerks, freeze_keeps_windup, sign_opposition_fires_too_late]
   caveat: gravity_tilt_may_sag_before_hold                 # keep factor modest / rely on CMC HALT-timing (ADR-072)
   default: disabled                                        # enable=0 -> no bleed (v_th/factor default 0.5/1.0 but inert until enabled)
+anticipatory_jerk_limited_jog_ramp:                        # ADR-075
+  purpose: smooth_jog_ramp_no_accel_discontinuity          # round both ends of the velocity ramp without overshoot/hunting
+  problem: adr042_ramp_free_falls_accel                    # jerk-limits accel RISE, free-falls it -> accel discontinuous at the setpoint (settle jerk)
+  method: phase_plane_scurve                               # hold accel on a=sqrt(2*jerk*|remaining|) so it eases to 0 as velocity reaches target
+  overshoot_guard: hard_backstop_never_crosses_target      # independent of the S-curve math -> tuning error can't overshoot
+  live_target: replanned_each_tick                         # moving stick re-tracks jerk-bounded; reversals stay bounded
+  od_entry: 0x2300_14_vel_accel_scurve                     # U8 RW PERSIST; reuses vel_accel_jerk (0x2300:8) as the jerk cap
+  gui: jog_parameters_section                              # new "Jog parameters" group (0x2300 jog-feel knobs regrouped there)
+  reuses_math: mc_traj_scurve_ADR045                       # same S-curve, applied to the streaming velocity command not a planned move
+  default: disabled                                        # 0 = ADR-042 free-fall behaviour (opt-in, A/B-able)
