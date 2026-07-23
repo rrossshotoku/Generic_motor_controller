@@ -41,12 +41,16 @@ float MC_VelocityController_Update(MC_VelocityController_t *ctrl,
        demand, so it engages firmly on a jog stop (demand parks at 0) but only fleetingly at a
        shot-recall landing (demand kisses 0 then goes negative to correct) -- leaving the position
        loop free to land on target. */
-    if ((cfg->stop_bleed_v_th > 0.0f) && (cfg->stop_bleed_rate > 0.0f) &&
+    if (cfg->stop_bleed_enable &&
+        (cfg->stop_bleed_v_th > 0.0f) && (cfg->stop_bleed_factor > 0.0f) &&
         (fabsf(velocity_demand_rad_per_s) < MC_VEL_STOP_DEMAND_EPS) &&
         (fabsf(velocity_actual_rad_per_s) < cfg->stop_bleed_v_th))
     {
-        float k = cfg->stop_bleed_rate * cfg->pid.sample_period_s;   /* fraction to remove this tick */
-        if (k > 1.0f) { k = 1.0f; }
+        /* Unwind speed as a factor of ki: per-tick fraction removed = factor*ki*dt (2 = twice as
+           fast). Ties the bleed to the windup timescale + auto-disables when ki = 0 (no integral). */
+        float k = cfg->stop_bleed_factor * cfg->pid.ki * cfg->pid.sample_period_s;
+        if (k > 1.0f)      { k = 1.0f; }
+        else if (k < 0.0f) { k = 0.0f; }
         ctrl->pid.integrator -= ctrl->pid.integrator * k;
     }
 

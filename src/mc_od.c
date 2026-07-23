@@ -130,8 +130,9 @@ void MC_OdStore_LoadDefaults(void)
     g_od.vel_accel_jerk = 0.0f;                            /* 0x2300:8 accel ramp-up jerk off (= plain accel ramp) */
     g_od.holding_enable = 1u;                              /* 0x2300:9 ADVISORY ONLY since ADR-072/REQ-0016 (CMC owns idle policy via op_mode); default 1 */
     g_od.jog_position_mode = 0u;                           /* 0x2300:10 default 0 = direct velocity jog (unchanged); 1 = position-integrated jog (ADR-062) */
-    g_od.vel_stop_bleed_v_th = 0.0f;                       /* 0x2300:11 stop-integrator bleed off by default (ADR-074) */
-    g_od.vel_stop_bleed_rate = 0.0f;                       /* 0x2300:12 stop-integrator bleed off by default (ADR-074) */
+    g_od.vel_stop_bleed_v_th   = 0.5f;                     /* 0x2300:11 bleed threshold [rad/s] (inert until enabled) (ADR-074) */
+    g_od.vel_stop_bleed_factor = 1.0f;                     /* 0x2300:12 bleed speed = 1×ki (inert until enabled) (ADR-074) */
+    g_od.vel_stop_bleed_enable = 0u;                       /* 0x2300:13 stop-integrator bleed OFF by default (ADR-074) */
 
     /* Current/FOC loops */
     g_od.foc_id_kp = 1.7f;   g_od.foc_id_ki = 1700.0f;

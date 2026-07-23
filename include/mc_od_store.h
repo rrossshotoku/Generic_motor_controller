@@ -26,8 +26,9 @@ typedef struct
     float    vel_accel_jerk;                         /* 0x2300:8 accel ramp-up jerk [rad/s^3]; 0 = step (ADR-042) */
     uint8_t  holding_enable;                         /* 0x2300:9 ADVISORY ONLY (ADR-072/REQ-0016): motor always holds when enabled; CMC owns idle policy (op_mode HOLD/OFF via 0x3044) */
     uint8_t  jog_position_mode;                      /* 0x2300:10 0 = direct velocity jog (default); 1 = position-integrated jog (ADR-062) */
-    float    vel_stop_bleed_v_th;                    /* 0x2300:11 stop-integrator bleed velocity threshold [rad/s]; 0 = off (ADR-074) */
-    float    vel_stop_bleed_rate;                    /* 0x2300:12 stop-integrator bleed rate [1/s]; 0 = off (ADR-074) */
+    float    vel_stop_bleed_v_th;                    /* 0x2300:11 stop-integrator bleed velocity threshold [rad/s] (ADR-074) */
+    float    vel_stop_bleed_factor;                  /* 0x2300:12 stop-integrator bleed speed as a factor of ki (ADR-074) */
+    uint8_t  vel_stop_bleed_enable;                  /* 0x2300:13 stop-integrator bleed on/off; 0 = off (ADR-074) */
     uint8_t  dither_enable;                          /* 0x2320:1 low-speed anti-stiction dither on/off (ADR-066) */
     float    dither_speed_threshold_rad_s;           /* 0x2320:2 dither active/faded below |v| this [rad/s] (ADR-066) */
     float    dither_amplitude_a;                     /* 0x2320:3 dither current amplitude [A] (ADR-066) */

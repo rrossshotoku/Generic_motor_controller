@@ -19,19 +19,27 @@ overshoot.
 ## Decision
 
 Add a **stop-integrator bleed** to the velocity controller: when commanded to stop and actually slow,
-fast-unwind the integrator so it can't push the velocity past zero. Two OD params in the velocity
-block, both `0 = disabled` default:
+fast-unwind the integrator so it can't push the velocity past zero. Three OD params in the velocity
+block:
 
+- `vel_stop_bleed_enable` (0x2300:13, U8 RW PERSIST) — master on/off, **0 = off** default.
 - `vel_stop_bleed_v_th` (0x2300:11, F32 RW PERSIST) — arm the bleed when `|velocity| < v_th`.
-- `vel_stop_bleed_rate` (0x2300:12, F32 RW PERSIST) — first-order unwind rate [1/s].
+- `vel_stop_bleed_factor` (0x2300:12, F32 RW PERSIST) — unwind speed as a **factor of ki**.
 
 Implementation (`mc_velocity_controller.c`), each medium tick, **before** the PI runs:
 ```
-if (v_th > 0 && rate > 0 && |demand| < 1e-3 && |actual| < v_th)
-    integrator -= integrator * min(rate·dt, 1)
+if (enable && v_th > 0 && factor > 0 && |demand| < 1e-3 && |actual| < v_th)
+    integrator -= integrator * clamp(factor·ki·dt, 0, 1)
 ```
 Draining the integral hands the final approach to the proportional brake, which reaches zero without
 overshoot → clean stop, no reverse.
+
+**Rate as a factor of `ki`, not an absolute [1/s]:** the per-tick removed fraction is `factor·ki·dt`,
+so `factor = 2` bleeds twice as fast (halves the unwind time constant). Tying it to `ki` scales the
+bleed with the *windup* timescale — a more aggressive integrator winds up faster and is bled faster —
+so the factor stays meaningful across a `ki` retune, and it auto-disables when `ki = 0` (no integral,
+nothing to bleed). Explicit `enable` keeps the tuning values (`v_th`, `factor`) set while the feature
+is off; defaults are sane (`v_th = 0.5`, `factor = 1`) but inert until enabled.
 
 ### Why gate on the demand (and why that's right for shot recall)
 
@@ -62,12 +70,12 @@ The gate is `|demand| ≈ 0` (plus `|actual| < v_th`), **not** the operating mod
 
 - A jog decelerates to a genuine standstill with no reverse twitch, at the cost of a slightly softer
   final brake (the P-only approach). Tunable via `v_th` (when it arms) and `rate` (how hard).
-- Additive non-PDO OD → no `MC_IF_PROTOCOL_VERSION` bump; PERSIST blob 497/640 B (ADR-070 headroom,
+- Additive non-PDO OD → no `MC_IF_PROTOCOL_VERSION` bump; PERSIST blob ~502/640 B (ADR-070 headroom,
   truncation guard clear). CHANGELOG v5.10.0.
 - **Gravity caveat (tilt axes):** the integrator also holds against gravity; a full bleed can let the
   axis sag briefly between "velocity loop lets go" and the CMC's stop→HOLD capture. Mitigations if
   seen: keep `rate` modest, or bleed only when the axis is genuinely near rest; the CMC HALT-timing
   fix (hold captured promptly at standstill) closes the gap. Non-issue on a horizontal pan.
-- **Verification is build + review only** — no hardware here. Bench: enable (`v_th` a bit above the
-  recoil speed, `rate` ~ 50–200 /s ≈ τ 5–20 ms), jog and release, confirm the reverse twitch is gone;
-  drop `rate` if the stop feels mushy, raise `v_th` if a twitch still slips through.
+- **Verification is build + review only** — no hardware here. Bench: set `enable = 1`, `v_th` a bit
+  above the recoil speed, `factor ≈ 1` (≈ 1×ki), jog and release, confirm the reverse twitch is gone;
+  lower `factor` if the stop feels mushy, raise `v_th` (or `factor`) if a twitch still slips through.
