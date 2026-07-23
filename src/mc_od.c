@@ -112,6 +112,7 @@ void MC_OdStore_LoadDefaults(void)
     g_od.pos_kp = 5.0f;
     g_od.velocity_ff_gain = 1.0f;   /* 0x2200:4 -- full velocity feedforward by default (ADR-031) */
     g_od.position_deadband_rad = 0.0f;   /* 0x2200:5 -- position-error deadband off by default (ADR-071) */
+    g_od.on_target_window_rad  = 0.02f;  /* 0x2200:6 -- ON_TARGET window; a de-energised axis settles at the deadband edge (ADR-078) */
 
     /* Velocity controller (proven gains, torque form: 150*Kt, 1000*Kt) */
     g_od.vel_kp = 150.0f * 0.231f;

@@ -18,7 +18,8 @@ typedef struct
     /* --- Gains / config (RW) --- */
     float    pos_kp, pos_ki, pos_kd;                 /* 0x2200:1-3 */
     float    velocity_ff_gain;                       /* 0x2200:4 -- position-cascade velocity FF ratio (ADR-031) */
-    float    position_deadband_rad;                  /* 0x2200:5 -- position-error deadband; no correction within +/- this; 0 = off (ADR-071) */
+    float    position_deadband_rad;                  /* 0x2200:5 -- position-error deadband (CONTROL tolerance); no correction within +/- this; 0 = off (ADR-071) */
+    float    on_target_window_rad;                   /* 0x2200:6 -- ON_TARGET/TARGET_REACHED window (STATUS tolerance); 0 = fallback 0.01 rad (ADR-078) */
     float    vel_kp, vel_ki, vel_kd;                 /* 0x2300 */
     float    vel_current_limit_a;                    /* 0x2300:4 */
     float    vel_load_factor;                        /* 0x2300:5 -- operator load multiplier on vel kp/ki (REQ-0014) */

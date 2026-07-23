@@ -122,8 +122,8 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   `position_deadband_rad` (`0x2200:5`, ADR-071, 0 = off) nulls the correction within ±deadband of the
   target so the axis parks instead of hunting; continuous form (subtracts the band outside it → the
   correction reaches 0 smoothly at the edge, no velocity step), applied before the following-error
-  clamp, on the loop's error only (raw `position_error_rad` telemetry is unaffected). Also serves as
-  the **target-reached window** (ADR-076, see below). Wired into the scheduler
+  clamp, on the loop's error only (raw `position_error_rad` telemetry is unaffected). This is the
+  **control** tolerance; the ON_TARGET **status** window is separate (`0x2200:6`, see below). Wired into the scheduler
   `PROFILE_POSITION` cascade: `NEW_SETPOINT` starts a trapezoidal plan (target `0x607A`, time
   `0x607B`, limits `0x6081/3/4`); each 1 kHz tick trajectory → position loop →
   `velocity_demand = velocity_ff_gain·trajectory_velocity_ff + correction` → velocity loop (the FF gain
@@ -132,9 +132,10 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   `MC_IF_SW_TARGET_REACHED (0x0400)` **and** `movement_status` `MC_IF_MOVE_ON_TARGET` (published
   together from `od_mirror_live`): true only when the plan is `complete`, the hold is still the CMC's
   commanded target (`at_cmd_target` — a joystick jog de-asserts it, ADR-056), and `|error| < window`.
-  The **window is `position_deadband_rad`** (`0x2200:5`) so "on the shot" matches where the axis parks
-  under the deadband, falling back to `MC_POS_TARGET_WINDOW_RAD` (0.01 rad) when the deadband is 0
-  (ADR-076). **It is latched and survives the drive being disabled** after the move (ADR-077): an axis
+  The **window is its own entry `on_target_window_rad`** (`0x2200:6`, default 0.02, fallback 0.01 when
+  0; ADR-078) — decoupled from the deadband because the continuous deadband parks the axis *at* the
+  band edge and an OFF-policy axis settles just *outside* it, so the status window must be ≥ the
+  deadband to be reachable. **It is latched and survives the drive being disabled** after the move (ADR-077): an axis
   parked on the shot with the OFF idle policy (`axis_holding_enable = 0`, de-energised) still reports
   on-shot; it drops on a joystick jog, a new move, or if back-driven beyond the deadband.
   **Position-integrated jog FF (ADR-073):** the jog (`jog_position_mode = 1`) integrates the stick

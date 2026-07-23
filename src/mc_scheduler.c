@@ -136,6 +136,7 @@ static float                         s_accel_ff_rad_s2;   /* trajectory accel fe
 static float                         s_vel_ff_gain;       /* velocity FF ratio in the position cascade (0x2200:4, ADR-031) */
 static float                         s_jog_ref_vel;       /* position-jog reference velocity (Δref/dt) -> velocity FF (ADR-073); 0 when not jogging */
 static float                         s_shot_pos_rad;      /* home-relative position of the last reached CMC target -> ON_TARGET survives drive-disable (ADR-077) */
+static float                         s_on_target_win_rad; /* ON_TARGET/TARGET_REACHED window (0x2200:6, ADR-078); 0 -> MC_POS_TARGET_WINDOW_RAD fallback */
 static float                         s_pos_hold_rad;      /* held position when in position mode with no active plan */
 
 /* Loop-tuning test-signal overlay (ADR-030): an on-motor generator drives the selected loop's reference. */
@@ -146,7 +147,7 @@ static float                         s_notch_last_f0 = -1.0f, s_notch_last_bw = 
 static uint8_t                       s_sig_loop;           /* latched target loop while active (MC_IF_TEST_MODE_*) */
 static float                         s_sig_value;          /* generator output this medium tick */
 static float                         s_pos_tune_entry_rad; /* position captured when position-tuning fires (home-relative) */
-#define MC_POS_TARGET_WINDOW_RAD (0.01f)                  /* target-reached window FALLBACK when position_deadband_rad is 0 (ADR-076); else the deadband is the window */
+#define MC_POS_TARGET_WINDOW_RAD (0.01f)                  /* ON_TARGET window FALLBACK when on_target_window_rad (0x2200:6) is 0 (ADR-078) */
 
 /* E1: effective drive command (arbitrated commissioning-vs-remote in the medium loop, consumed
    by the fast/medium loops). Plain scalars, single-writer (medium) / reader (fast) — atomic. */
@@ -360,6 +361,7 @@ static void od_apply_gains(void)
     s_pos_cfg.pid.ki = g_od.pos_ki;
     s_pos_cfg.pid.kd = g_od.pos_kd;
     s_pos_cfg.deadband_rad = g_od.position_deadband_rad;   /* 0x2200:5 position-error deadband (ADR-071) */
+    s_on_target_win_rad    = g_od.on_target_window_rad;    /* 0x2200:6 ON_TARGET/TARGET_REACHED window (ADR-078) */
     s_vel_ff_gain    = (g_od.velocity_ff_gain >= 0.0f) ? g_od.velocity_ff_gain : 0.0f;  /* 0x2200:4 (ADR-031) */
     {
         const float vlim = (float)g_od.profile_velocity * MC_IF_VEL_SCALE;
@@ -1493,10 +1495,10 @@ void MC_MotionLoop_1kHz(void)
         s_accel_ff_rad_s2 = a_ff;             /* -> torque request inertia slot */
 
         const float perr = s_pos_ctl.position_error_rad;
-        /* ON_TARGET / TARGET_REACHED tolerance = the position deadband (0x2200:5, ADR-071), so "at the
-           shot" is reported over the same band the axis actually parks in under the deadband (ADR-076).
-           Falls back to MC_POS_TARGET_WINDOW_RAD when the deadband is off (0) so the bit stays reachable. */
-        const float twin = (s_pos_cfg.deadband_rad > 0.0f) ? s_pos_cfg.deadband_rad : MC_POS_TARGET_WINDOW_RAD;
+        /* ON_TARGET / TARGET_REACHED tolerance = its own window (0x2200:6, ADR-078), decoupled from the
+           control deadband: a de-energised (OFF idle policy) axis settles AT the deadband edge, so the
+           status window must be >= the deadband to ever report. Falls back to 0.01 rad when unset. */
+        const float twin = (s_on_target_win_rad > 0.0f) ? s_on_target_win_rad : MC_POS_TARGET_WINDOW_RAD;
         const bool reached = complete && at_cmd_target && (perr < twin) && (perr > -twin);
         /* Latch the shot position when reached so ON_TARGET can survive the drive being disabled
            afterwards (the OFF idle policy, 0x3044=0 on high-stiction axes) -- see the else branch and
@@ -1527,7 +1529,7 @@ void MC_MotionLoop_1kHz(void)
             if (g_mc_debug.target_reached)
             {
                 const float p_act = s_est.mechanical.position_rad - s_home_offset_rad;
-                const float twin  = (s_pos_cfg.deadband_rad > 0.0f) ? s_pos_cfg.deadband_rad : MC_POS_TARGET_WINDOW_RAD;
+                const float twin  = (s_on_target_win_rad > 0.0f) ? s_on_target_win_rad : MC_POS_TARGET_WINDOW_RAD;
                 if (fabsf(p_act - s_shot_pos_rad) > twin) { g_mc_debug.target_reached = false; }
             }
         }
