@@ -10,6 +10,8 @@
 typedef struct
 {
     float inertia_kg_m2;
+    float accel_ff_gain;      /**< Scales the inertia accel feedforward (0x2300:15, ADR-079); analog of the
+                                   position loop's velocity_ff_gain. 1.0 = full physical FF, 0 = none. */
     float torque_constant_nm_per_a;
     float static_friction_nm;
     float viscous_friction_nm_per_rad_s;

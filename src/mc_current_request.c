@@ -17,7 +17,7 @@ MC_MotorTorqueRequest_t MC_CurrentRequest_Update(const MC_TorqueModelConfig_t *c
                                                  bool enable,
                                                  MC_CurrentRequestDebug_t *dbg)
 {
-    const float t_accel = cfg->inertia_kg_m2 * acceleration_ff_rad_per_s2;
+    const float t_accel = cfg->accel_ff_gain * cfg->inertia_kg_m2 * acceleration_ff_rad_per_s2;  /* gain 0x2300:15 (ADR-079) */
     const float t_fric  = cfg->static_friction_nm * MC_Math_Sign(velocity_rad_per_s)
                         + cfg->viscous_friction_nm_per_rad_s * velocity_rad_per_s;
     const float t_raw   = velocity_feedback_correction_nm + t_accel + t_fric;

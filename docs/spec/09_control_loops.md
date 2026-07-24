@@ -114,8 +114,13 @@ quantity); `id` is left unclamped, still backstopped by the trip. Distinct from 
   acceleration, still no overshoot (re-planned vs the live target each tick; a hard backstop clamps
   the output so it can never cross the target). Reuses the `accel_jerk` knob.
 - **Torque/current request** (D2, ADR-012): `mc_current_request.c` — torque = velocity
-  correction + inertia·accel_ff + friction_ff, clamped; iq = torque/Kt clamped to the current
-  limit, id = 0. Accel/friction FF present but 0 until D3 / friction ID.
+  correction + `accel_ff_gain·inertia·accel_ff` + friction_ff, clamped; iq = torque/Kt clamped to the
+  current limit, id = 0. **Motor-model params drive this (ADR-079):** `Kt` (`0x2000:1`) sets the
+  torque→iq scale; `motor_inertia` (`0x2000:2`) the accel-FF magnitude; `accel_ff_gain` (`0x2300:15`,
+  default 1.0) trims it — the velocity-loop analog of `velocity_ff_gain`. `motor_pole_pairs`
+  (`0x2000:5`) drives the FOC electrical angle in the estimator. `R`/`L` (`0x2000:3/4`) don't feed a
+  control law (gains are direct, ADR-049) but seed the PC-tool "Estimate from Model" current-gain
+  button (`kp = 2π·f·L`, `ki = 2π·f·R`). Friction FF still 0 until friction ID.
 - **Position loop** (D3, ADR-028): `mc_position_controller.c` — `velocity_correction =
   PID(position_demand − position_actual)`, P-only default (gains `0x2200`), output clamped to a
   velocity-correction limit, error clamped to a following-error limit. A **position-error deadband**

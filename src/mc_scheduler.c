@@ -345,6 +345,8 @@ static void od_apply_gains(void)
     s_torque_cfg.current_limit_a        = i_lim;   /* thermally-derated operational limit (ADR-065) */
     s_torque_cfg.torque_limit_nm        = tlim;
     s_torque_cfg.torque_constant_nm_per_a = kt;
+    s_torque_cfg.inertia_kg_m2          = g_od.motor_inertia_kg_m2;   /* 0x2000:2 -> accel FF (ADR-079; was ignored) */
+    s_torque_cfg.accel_ff_gain          = g_od.accel_ff_gain;         /* 0x2300:15 accel-FF trim, analog of velocity_ff_gain (ADR-079) */
 
     /* Over-current trip threshold (measured |phase current|, fast loop): driven by the OD entry
        current_trip_a (0x2600:2) -- GUI-settable + PERSIST. Clamp to a small positive minimum so a
@@ -374,9 +376,11 @@ static void od_apply_gains(void)
     s_foc_cfg.iq_pi.kp = g_od.foc_iq_kp;  s_foc_cfg.iq_pi.ki = g_od.foc_iq_ki;
     s_foc_cfg.voltage_limit_v = g_od.foc_voltage_limit_v;
     /* Brushed current loop: kp/ki are set DIRECTLY from the OD (0x2400:6,7, RW PERSIST), hand-tuned
-       (ADR-049, replacing the R/L+bandwidth derivation). R/L (0x2000:3,4) still feed the model. */
+       (ADR-049, replacing the R/L+bandwidth derivation). R/L (0x2000:3,4) feed the model + the GUI
+       "Estimate from Model" seed (ADR-079). pole_pairs (0x2000:5) now drives FOC commutation. */
     s_motor.resistance_ohm = g_od.motor_resistance_ohm;
     s_motor.inductance_h   = g_od.motor_inductance_h;
+    s_est_cfg.pole_pairs   = (float)g_od.motor_pole_pairs;   /* 0x2000:5 -> electrical angle (ADR-079; was ignored) */
     s_hb_ipi_cfg.kp = g_od.hb_cur_kp;
     s_hb_ipi_cfg.ki = g_od.hb_cur_ki;
     /* Incremental quad scale: signed rad/count = 2pi / counts_per_rev (the sign sets direction). (ADR-052) */

@@ -31,6 +31,7 @@ typedef struct
     float    vel_stop_bleed_factor;                  /* 0x2300:12 stop-integrator bleed speed as a factor of ki (ADR-074) */
     uint8_t  vel_stop_bleed_enable;                  /* 0x2300:13 stop-integrator bleed on/off; 0 = off (ADR-074) */
     uint8_t  vel_accel_scurve;                       /* 0x2300:14 1 = anticipatory jerk-limited S-curve ramp; 0 = ramp-up-only free-fall (ADR-075) */
+    float    accel_ff_gain;                          /* 0x2300:15 velocity-loop accel-FF trim (x inertia*accel); analog of velocity_ff_gain; 1.0 = full (ADR-079) */
     uint8_t  dither_enable;                          /* 0x2320:1 low-speed anti-stiction dither on/off (ADR-066) */
     float    dither_speed_threshold_rad_s;           /* 0x2320:2 dither active/faded below |v| this [rad/s] (ADR-066) */
     float    dither_amplitude_a;                     /* 0x2320:3 dither current amplitude [A] (ADR-066) */
